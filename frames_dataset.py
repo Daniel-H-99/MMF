@@ -5,11 +5,12 @@ from sklearn.model_selection import train_test_split
 from imageio import mimread
 
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 import pandas as pd
-from augmentation import AllAugmentationTransform
+from augmentation import AllAugmentationWithMeshTransform
 import glob
-
+import random
 
 def read_video(name, frame_shape):
     """
@@ -51,6 +52,162 @@ def read_video(name, frame_shape):
 
     return video_array
 
+
+class MeshFramesDataset(Dataset):
+    """
+    Dataset of videos, each video can be represented as:
+      - an image of concatenated frames
+      - '.mp4' or '.gif'
+      - folder with all frames
+    """
+
+    def __init__(self, root_dir, frame_shape=(256, 256, 3), is_train=True,
+                 random_seed=0, id_sampling=False, pairs_list=None, augmentation_params=None, num_dummy_set=0):
+        self.root_dir = root_dir
+        self.frame_shape = tuple(frame_shape)
+        self.pairs_list = pairs_list
+        self.id_sampling = id_sampling
+        self.num_dummy_set = num_dummy_set
+        # if os.path.exists(os.path.join(root_dir, 'train')):
+        #     assert os.path.exists(os.path.join(root_dir, 'test'))
+        #     print("Use predefined train-test split.")
+        #     train_videos = os.listdir(os.path.join(root_dir, 'train'))
+        #     test_videos = os.listdir(os.path.join(root_dir, 'test'))
+        #     self.root_dir = os.path.join(self.root_dir, 'train' if is_train else 'test')
+        # else:
+        #     print("Use random train-test split.")
+        #     train_videos, test_videos = train_test_split(self.videos, random_state=random_seed, test_size=0.2)
+
+        self.videos = list(filter(lambda x: x.endswith('.mp4'), os.listdir(root_dir)))
+        self.is_train = is_train
+
+        if self.is_train:
+            self.transform = AllAugmentationWithMeshTransform(**augmentation_params)
+        else:
+            self.transform = None
+
+    def __len__(self):
+        return len(self.videos)
+
+    def __getitem__(self, idx):
+
+        name = self.videos[idx]
+        path = os.path.join(self.root_dir, name)
+
+        video_name = os.path.basename(path)
+    
+        frames = sorted(os.listdir(os.path.join(path, 'img')))
+        num_frames = min(500, len(frames))
+        frame_idx = np.random.choice(num_frames, replace=True, size=2) if self.is_train else range(num_frames)
+
+        if self.is_train:
+            mesh_dicts = [torch.load(os.path.join(path, 'mesh_dict', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]
+            R_array = [np.array(mesh_dict['R']) for mesh_dict in mesh_dicts]
+            t_array = [np.array(mesh_dict['t']) for mesh_dict in mesh_dicts]
+            c_array = [np.array(mesh_dict['c']) for mesh_dict in mesh_dicts]
+            mesh_array = [np.array(list(mesh_dict.values())[:478]) for mesh_dict in mesh_dicts]
+            video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[frame_idx[i]]))) for i in range(len(frame_idx))]
+            mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[frame_idx[i]]))) for i in range(len(frame_idx))]
+            if self.num_dummy_set > 0:
+                dummy_idx = random.randrange(self.num_dummy_set)
+                dummy_mesh_dict = f'mesh_dict_dummy_{dummy_idx}'
+                dummy_img_dir = f'mesh_image_dummy_{dummy_idx}'
+                R_array.append(R_array[0])
+                t_array.append(t_array[0])
+                c_array.append(c_array[0])
+                mesh_array.append(np.array(list(torch.load(os.path.join(path, dummy_mesh_dict, frames[frame_idx[0]].replace('.png', '.pt'))).values())[:478]))
+                mesh_img_array.append(img_as_float32(io.imread(os.path.join(path, dummy_img_dir, frames[frame_idx[0]]))))
+                video_array.append(mesh_img_array[-1])
+            else:
+                R_array.append(R_array[1])
+                t_array.append(t_array[1])
+                c_array.append(c_array[1])
+                mesh_array.append(mesh_array[1])
+                video_array.append(img_as_float32(io.imread(os.path.join(path, 'img', frames[frame_idx[1] - 1]))))
+                mesh_img_array.append(mesh_img_array[1])
+
+            if self.transform is not None:
+                video_array, mesh_array, R_array, t_array, c_array, mesh_img_array = self.transform(video_array, mesh_array, R_array, t_array, c_array, mesh_img_array)
+        else:
+            # mesh_dict = 'mesh_dict'
+            # video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
+            # mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
+            # R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
+            # t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
+            # c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
+            reference_frame_path = os.path.join(path, 'frame_reference.png')
+            reference_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
+            reference_frame = img_as_float32(io.imread(reference_frame_path))
+            reference_mesh = np.array(list(reference_mesh_dict.values())[:478])
+            reference_R = np.array(reference_mesh_dict['R'])
+            reference_t = np.array(reference_mesh_dict['t'])
+            reference_c = np.array(reference_mesh_dict['c'])
+
+            video_array = [reference_frame for idx in frame_idx]
+            mesh_array = [reference_mesh for idx in frame_idx]
+            R_array = [reference_R for idx in frame_idx]
+            t_array = [reference_t for idx in frame_idx]
+            c_array = [reference_c for idx in frame_idx]
+
+            mesh_dict = 'driving_mesh_dict'
+            driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
+            driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'driving_mesh_image', frames[idx]))) for idx in frame_idx]
+            driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
+            
+        video_array = np.array(video_array, dtype='float32')
+        if self.is_train:
+            mesh_img_array = np.array(mesh_img_array, dtype='float32')
+        mesh_array = np.array(mesh_array, dtype='float32') / 128 - 1
+        R_array = np.array(R_array, dtype='float32')
+        c_array = np.array(c_array, dtype='float32') * 128
+        t_array = np.array(t_array, dtype='float32')
+        t_array = t_array + np.matmul(R_array, (c_array[:, None, None] * np.ones_like(t_array)))
+
+        out = {}
+        if self.is_train:
+            source = video_array[0]
+            real = video_array[1]
+            driving = video_array[2]
+            source_mesh = mesh_array[0]
+            real_mesh = mesh_array[1]
+            driving_mesh = mesh_array[2]
+            source_R = R_array[0]
+            real_R = R_array[1]
+            driving_R = R_array[2]
+            source_t = t_array[0]
+            real_t = t_array[1]
+            driving_t = t_array[2]
+            source_c = c_array[0]
+            real_c = c_array[1]
+            driving_c = c_array[2]
+            source_mesh_image = mesh_img_array[0]
+            real_mesh_image = mesh_img_array[1]
+            driving_mesh_image = mesh_img_array[2]
+
+            out['driving'] = driving.transpose((2, 0, 1))
+            out['real'] = real.transpose((2, 0, 1))
+            out['source'] = source.transpose((2, 0, 1))
+            out['driving_mesh'] = {'mesh': driving_mesh, 'R': driving_R, 't': driving_t, 'c': driving_c}
+            out['real_mesh'] = {'mesh': real_mesh, 'R': real_R, 't': real_t, 'c': real_c}
+            out['source_mesh'] = {'mesh': source_mesh, 'R': source_R, 't': source_t, 'c': source_c}
+            out['driving_mesh_image'] = driving_mesh_image.transpose((2, 0, 1))
+            out['real_mesh_image'] = real_mesh_image.transpose((2, 0, 1))
+            out['source_mesh_image'] = source_mesh_image.transpose((2, 0, 1))
+
+            out['name'] = video_name
+        else:
+            driving_video_array = np.array(driving_video_array, dtype='float32')
+            driving_mesh_img_array = np.array(driving_mesh_img_array, dtype='float32')
+            driving_mesh_array = np.array(driving_mesh_array, dtype='float32') / 128 - 1
+            video = video_array
+            out['video'] = video.transpose((3, 0, 1, 2))
+            out['mesh'] = {'mesh': mesh_array, 'R': R_array, 't': t_array, 'c': c_array}
+            out['driving_video'] = driving_video_array.transpose((3, 0, 1, 2))
+            out['driving_mesh_img'] = driving_mesh_img_array.transpose((3, 0, 1, 2))
+            out['driving_mesh'] = {'mesh': driving_mesh_array, 'R': R_array, 't': t_array, 'c': c_array}
+            out['driving_name'] = video_name
+            out['source_name'] = video_name
+        return out
 
 class FramesDataset(Dataset):
     """

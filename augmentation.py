@@ -93,13 +93,47 @@ class RandomFlip(object):
         self.time_flip = time_flip
         self.horizontal_flip = horizontal_flip
 
-    def __call__(self, clip):
+    def __call__(self, clip, mesh=None, R=None, t=None, c=None, mesh_image=None):
         if random.random() < 0.5 and self.time_flip:
-            return clip[::-1]
-        if random.random() < 0.5 and self.horizontal_flip:
-            return [np.fliplr(img) for img in clip]
+            if mesh is not None:
+                return clip[::-1], mesh[::-1], R[::-1], t[::-1], c[::-1], mesh_image[::-1]
+            else:
+                return clip[::-1]
 
-        return clip
+        if random.random() < 0.5 and self.horizontal_flip:
+            if mesh is not None:
+                new_meshes = []
+                new_Rs = []
+                new_ts = []
+                new_cs = []
+                W = clip[0].shape[1]
+                flip_t = np.array([W, 0, 0])[:, np.newaxis]    # 3 x 1
+                flip_R = np.eye(3)
+                flip_R[0] *= -1
+
+                for i in range(len(mesh)):
+                    _mesh = mesh[i].T
+                    _R = R[i]
+                    _t = t[i]
+                    _c = c[i]
+                    new_mesh = (np.matmul(flip_R, _mesh) + flip_t).T
+                    new_R = np.matmul(_R, np.linalg.inv(flip_R))
+                    new_t = _t - _c * np.matmul(new_R, flip_t)
+                    new_c = _c
+                    new_meshes.append(new_mesh)
+                    new_Rs.append(new_R)
+                    new_ts.append(new_t)
+                    new_cs.append(new_c)
+
+                return [np.fliplr(img) for img in clip], new_meshes, new_Rs, new_ts, new_cs, [np.fliplr(img) for img in mesh_image]
+            else:
+                return [np.fliplr(img) for img in clip]
+
+
+        if mesh is not None:
+            return clip, mesh, R, t, c, mesh_image
+        else:
+            return clip
 
 
 class RandomResize(object):
@@ -116,7 +150,7 @@ class RandomResize(object):
         self.ratio = ratio
         self.interpolation = interpolation
 
-    def __call__(self, clip):
+    def __call__(self, clip, mesh=None, R=None, t=None, c=None, mesh_image=None):
         scaling_factor = random.uniform(self.ratio[0], self.ratio[1])
 
         if isinstance(clip[0], np.ndarray):
@@ -130,7 +164,14 @@ class RandomResize(object):
         resized = resize_clip(
             clip, new_size, interpolation=self.interpolation)
 
-        return resized
+
+        if mesh is not None:
+            mesh_image_resized = resize_clip(
+                mesh_image, new_size, interpolation=self.interpolation
+            )
+            return resized, mesh * scaling_factor, R, t, c / scaling_factor, mesh_image_resized
+        else:
+            return resized
 
 
 class RandomCrop(object):
@@ -146,7 +187,7 @@ class RandomCrop(object):
 
         self.size = size
 
-    def __call__(self, clip):
+    def __call__(self, clip, mesh=None, R=None, t=None, c=None, mesh_image=None):
         """
         Args:
         img (PIL.Image or numpy.ndarray): List of videos to be cropped
@@ -169,8 +210,15 @@ class RandomCrop(object):
         y1 = 0 if w == im_w else random.randint(0, im_h - h)
         cropped = crop_clip(clip, y1, x1, h, w)
 
-        return cropped
-
+        if mesh is not None:
+            mesh_image_clip = pad_clip(mesh_image, h, w)
+            mesh_image_cropped = crop_clip(mesh_image_clip, y1, x1, h, w)
+            d = np.array([x1, y1, 0])
+            mesh -= d[None]
+            t -= np.matmul(R, d.T / c)
+            return cropped, mesh, R, t, c, mesh_image_cropped
+        else:
+            return cropped
 
 class RandomRotation(object):
     """Rotate entire clip randomly by a random angle within
@@ -194,7 +242,7 @@ class RandomRotation(object):
 
         self.degrees = degrees
 
-    def __call__(self, clip):
+    def __call__(self, clip, mesh=None, R=None, t=None, c=None, mesh_image=None):
         """
         Args:
         img (PIL.Image or numpy.ndarray): List of videos to be cropped
@@ -211,7 +259,11 @@ class RandomRotation(object):
             raise TypeError('Expected numpy.ndarray or PIL.Image' +
                             'but got list of {0}'.format(type(clip[0])))
 
-        return rotated
+
+        if mesh is not None:
+            return rotated, mesh, R, t, c, mesh_image
+        else:
+            return rotated
 
 
 class ColorJitter(object):
@@ -258,7 +310,7 @@ class ColorJitter(object):
             hue_factor = None
         return brightness_factor, contrast_factor, saturation_factor, hue_factor
 
-    def __call__(self, clip):
+    def __call__(self, clip, mesh=None, R=None, t=None, c=None, mesh_image=None):
         """
         Args:
         clip (list): list of PIL.Image
@@ -317,7 +369,11 @@ class ColorJitter(object):
         else:
             raise TypeError('Expected numpy.ndarray or PIL.Image' +
                             'but got list of {0}'.format(type(clip[0])))
-        return jittered_clip
+
+        if mesh is not None:
+            return jittered_clip, mesh, R, t, c, mesh_image
+        else:
+            return jittered_clip
 
 
 class AllAugmentationTransform:
@@ -343,3 +399,27 @@ class AllAugmentationTransform:
         for t in self.transforms:
             clip = t(clip)
         return clip
+
+class AllAugmentationWithMeshTransform:
+    def __init__(self, resize_param=None, rotation_param=None, flip_param=None, crop_param=None, jitter_param=None):
+        self.transforms = []
+        self.meshTransforms = []
+        if flip_param is not None:
+            self.transforms.append(RandomFlip(**flip_param))
+            
+        if rotation_param is not None:
+            self.transforms.append(RandomRotation(**rotation_param))
+
+        if resize_param is not None:
+            self.transforms.append(RandomResize(**resize_param))
+
+        if crop_param is not None:
+            self.transforms.append(RandomCrop(**crop_param))
+
+        if jitter_param is not None:
+            self.transforms.append(ColorJitter(**jitter_param))
+
+    def __call__(self, clip, mesh, R, t, c, mesh_image):
+        for tf in self.transforms:
+            clip, mesh, R, t, c, mesh_image = tf(clip, mesh=mesh, R=R, t=t, c=c, mesh_image=mesh_image)
+        return clip, mesh, R, t, c, mesh_image

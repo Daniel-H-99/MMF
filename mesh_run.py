@@ -10,42 +10,43 @@ from shutil import copy
 
 from frames_dataset import MeshFramesDataset
 
-from modules.generator import OcclusionAwareGenerator
+from modules.generator import MeshOcclusionAwareGenerator
 from modules.discriminator import MultiScaleDiscriminator
-from modules.keypoint_detector import KPDetector
 
 import torch
 
-from train import train
+from mesh_train import train
 from reconstruction import reconstruction
-from animate import animate
+from mesh_animate import animate
 
 if __name__ == "__main__":
     
     if sys.version_info[0] < 3:
         raise Exception("You must use Python 3 or higher. Recommended version is Python 3.7")
 
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1,2,3'
     parser = ArgumentParser()
     parser.add_argument("--config", required=True, help="path to config")
     parser.add_argument("--mode", default="train", choices=["train", "reconstruction", "animate"])
     parser.add_argument("--log_dir", default='log', help="path to log into")
     parser.add_argument("--checkpoint", default=None, help="path to checkpoint to restore")
-    parser.add_argument("--device_ids", default="1,2,3", type=lambda x: list(map(int, x.split(','))),
+    parser.add_argument("--device_ids", default="0,1,2", type=lambda x: list(map(int, x.split(','))),
                         help="Names of the devices comma separated.")
     parser.add_argument("--verbose", dest="verbose", action="store_true", help="Print model architecture")
     parser.set_defaults(verbose=False)
-
     opt = parser.parse_args()
     with open(opt.config) as f:
         config = yaml.load(f)
-
+    if opt.mode == 'animate':
+        config['dataset_params']['root_dir'] = '../datasets/test_kkj'
+        os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     if opt.checkpoint is not None:
         log_dir = os.path.join(*os.path.split(opt.checkpoint)[:-1])
     else:
         log_dir = os.path.join(opt.log_dir, os.path.basename(opt.config).split('.')[0])
         log_dir += ' ' + strftime("%d_%m_%y_%H.%M.%S", gmtime())
 
-    generator = OcclusionAwareGenerator(**config['model_params']['generator_params'],
+    generator = MeshOcclusionAwareGenerator(**config['model_params']['generator_params'],
                                         **config['model_params']['common_params'])
 
     if torch.cuda.is_available():
@@ -60,14 +61,6 @@ if __name__ == "__main__":
     if opt.verbose:
         print(discriminator)
 
-    kp_detector = KPDetector(**config['model_params']['kp_detector_params'],
-                             **config['model_params']['common_params'])
-
-    if torch.cuda.is_available():
-        kp_detector.to(opt.device_ids[0])
-
-    if opt.verbose:
-        print(kp_detector)
 
     dataset = MeshFramesDataset(is_train=(opt.mode == 'train'), **config['dataset_params'])
 
@@ -78,10 +71,10 @@ if __name__ == "__main__":
 
     if opt.mode == 'train':
         print("Training...")
-        train(config, generator, discriminator, kp_detector, opt.checkpoint, log_dir, dataset, opt.device_ids)
+        train(config, generator, discriminator, opt.checkpoint, log_dir, dataset, opt.device_ids)
     elif opt.mode == 'reconstruction':
         print("Reconstruction...")
-        reconstruction(config, generator, kp_detector, opt.checkpoint, log_dir, dataset)
+        reconstruction(config, generator, opt.checkpoint, log_dir, dataset)
     elif opt.mode == 'animate':
         print("Animate...")
-        animate(config, generator, kp_detector, opt.checkpoint, log_dir, dataset)
+        animate(config, generator, opt.checkpoint, log_dir, dataset)

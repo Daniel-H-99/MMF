@@ -67,9 +67,11 @@ def compute_bbox(start, end, fps, tube_bbox, frame_shape, inp, image_shape, incr
     end = end / fps
     time = end - start
 
-    scale = f'{image_shape[0]}:{image_shape[1]}'
+    scale = "{}:{}".format(image_shape[0], image_shape[1])
+    # scale =  f'{image_shape[0]}:{image_shape[1]}'
 
-    return f'ffmpeg -i {inp} -ss {start} -t {time} -filter:v "crop={w}:{h}:{left}:{top}, scale={scale}" crop.mp4'
+    return 'ffmpeg -i {} -ss {} -t {} -filter:v "crop={}:{}:{}:{}, scale={}" crop.mp4'.format(inp, start, time, w, h, left, top, scale)
+    # return f'ffmpeg -i {inp} -ss {start} -t {time} -filter:v "crop={w}:{h}:{left}:{top}, scale={scale}" crop.mp4'
 
 
 def compute_bbox_trajectories(trajectories, fps, frame_shape, args):

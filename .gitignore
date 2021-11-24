@@ -1,3 +1,8 @@
 /.vscode
 __pycache__
 /venv
+log/
+*.mp4
+face-alignment/
+*.png
+*.wav

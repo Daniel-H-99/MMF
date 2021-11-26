@@ -11,6 +11,7 @@ import pandas as pd
 from augmentation import AllAugmentationWithMeshTransform
 import glob
 import random
+import pickle as pkl
 
 def read_video(name, frame_shape):
     """
@@ -97,7 +98,7 @@ class MeshFramesDataset(Dataset):
         video_name = os.path.basename(path)
     
         frames = sorted(os.listdir(os.path.join(path, 'img')))
-        num_frames = min(500, len(frames))
+        num_frames = len(frames)
         frame_idx = np.random.choice(num_frames, replace=True, size=2) if self.is_train else range(num_frames)
 
         if self.is_train:
@@ -105,6 +106,11 @@ class MeshFramesDataset(Dataset):
             R_array = [np.array(mesh_dict['R']) for mesh_dict in mesh_dicts]
             t_array = [np.array(mesh_dict['t']) for mesh_dict in mesh_dicts]
             c_array = [np.array(mesh_dict['c']) for mesh_dict in mesh_dicts]
+            audio_array = []
+            for i in range(len(frame_idx)):
+                with open(os.path.join(path, 'audio', '{:05d}.pickle'.format(int(frames[frame_idx[i]][:-4]) - 1)), 'rb') as f:
+                    mspec = pkl.load(f)
+                    audio_array.append(mspec)
             mesh_array = [np.array(list(mesh_dict.values())[:478]) for mesh_dict in mesh_dicts]
             video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[frame_idx[i]]))) for i in range(len(frame_idx))]
             mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[frame_idx[i]]))) for i in range(len(frame_idx))]
@@ -125,6 +131,7 @@ class MeshFramesDataset(Dataset):
                 mesh_array.append(mesh_array[1])
                 video_array.append(img_as_float32(io.imread(os.path.join(path, 'img', frames[frame_idx[1] - 1]))))
                 mesh_img_array.append(mesh_img_array[1])
+                audio_array.append(audio_array[1])
 
             if self.transform is not None:
                 video_array, mesh_array, R_array, t_array, c_array, mesh_img_array = self.transform(video_array, mesh_array, R_array, t_array, c_array, mesh_img_array)
@@ -149,11 +156,12 @@ class MeshFramesDataset(Dataset):
             t_array = [reference_t for idx in frame_idx]
             c_array = [reference_c for idx in frame_idx]
 
-            mesh_dict = 'driving_mesh_dict'
+            mesh_dict = 'mesh_dict'
             driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
-            driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'driving_mesh_image', frames[idx]))) for idx in frame_idx]
+            driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[idx]))) for idx in frame_idx]
             driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
             
+        audio_array = np.array(audio_array, dtype='float32')
         video_array = np.array(video_array, dtype='float32')
         if self.is_train:
             mesh_img_array = np.array(mesh_img_array, dtype='float32')
@@ -165,6 +173,9 @@ class MeshFramesDataset(Dataset):
 
         out = {}
         if self.is_train:
+            source_audio = audio_array[0]
+            real_audio = audio_array[1]
+            driving_audio = audio_array[2]
             source = video_array[0]
             real = video_array[1]
             driving = video_array[2]
@@ -187,9 +198,9 @@ class MeshFramesDataset(Dataset):
             out['driving'] = driving.transpose((2, 0, 1))
             out['real'] = real.transpose((2, 0, 1))
             out['source'] = source.transpose((2, 0, 1))
-            out['driving_mesh'] = {'mesh': driving_mesh, 'R': driving_R, 't': driving_t, 'c': driving_c}
-            out['real_mesh'] = {'mesh': real_mesh, 'R': real_R, 't': real_t, 'c': real_c}
-            out['source_mesh'] = {'mesh': source_mesh, 'R': source_R, 't': source_t, 'c': source_c}
+            out['driving_mesh'] = {'mesh': driving_mesh, 'R': driving_R, 't': driving_t, 'c': driving_c, 'audio': driving_audio}
+            out['real_mesh'] = {'mesh': real_mesh, 'R': real_R, 't': real_t, 'c': real_c, 'audio': real_audio}
+            out['source_mesh'] = {'mesh': source_mesh, 'R': source_R, 't': source_t, 'c': source_c, 'audio': source_audio}
             out['driving_mesh_image'] = driving_mesh_image.transpose((2, 0, 1))
             out['real_mesh_image'] = real_mesh_image.transpose((2, 0, 1))
             out['source_mesh_image'] = source_mesh_image.transpose((2, 0, 1))

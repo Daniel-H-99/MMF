@@ -63,7 +63,7 @@ def animate(config, generator, checkpoint, log_dir, dataset):
                 kp_source = preprocess_mesh(mesh['mesh'][:, frame_idx])
                 out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_image, driving_image=driving_frame)
 
-                del out['sparse_deformed']
+                # del out['sparse_deformed']
 
                 predictions.append(np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0])
 
@@ -79,4 +79,4 @@ def animate(config, generator, checkpoint, log_dir, dataset):
             image_name = result_name + animate_params['format']
             imageio.mimsave(os.path.join(log_dir, image_name), visualizations, fps=25)
             data_dir = os.path.join(config['dataset_params']['root_dir'], x['driving_name'][0])
-            ffmpeg.output(ffmpeg.input(os.path.join(log_dir, image_name)), ffmpeg.input(os.path.join(data_dir, 'audio.wav')), os.path.join(data_dir, "animation.mp4")).overwrite_output().run()
+            ffmpeg.output(ffmpeg.input(os.path.join(log_dir, image_name)), ffmpeg.input(os.path.join(data_dir, '../audio.wav')), os.path.join(data_dir, "animation.mp4")).overwrite_output().run()

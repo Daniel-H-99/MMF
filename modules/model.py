@@ -219,8 +219,7 @@ class MeshGeneratorFullModel(torch.nn.Module):
     def preprocess_mesh(self, mesh):
         roi = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
         res = dict()
-        res['value'] = mesh['audio']
-        res['mesh'] = mesh
+        res['value'] = mesh['mesh'][:, roi, :2]
         # res['jacobian'] = (mesh['R'].inverse()[:, :2, :2] / mesh['c'].unsqueeze(1).unsqueeze(2)).unsqueeze(1).repeat(1, res['value'].size(1), 1, 1)
 
         # print("jacobian shape: {}".format(res['jacobian'].shape))

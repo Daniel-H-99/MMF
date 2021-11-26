@@ -66,7 +66,7 @@ class MeshOcclusionAwareGenerator(nn.Module):
             output_dict['kp_source'] = kp_source
             output_dict['kp_driving'] = kp_driving
             output_dict['mask'] = dense_motion['mask']  # B x K x H x W
-            # output_dict['sparse_deformed'] = dense_motion['sparse_deformed']    # B  K x C x H x W
+            output_dict['sparse_deformed'] = dense_motion['sparse_deformed']    # B  K x C x H x W
             output_dict['deformation'] = dense_motion['deformation']
             
             if 'occlusion_map' in dense_motion:
@@ -87,7 +87,7 @@ class MeshOcclusionAwareGenerator(nn.Module):
                 driving_mask *= (driving_mesh_image[:, [0]] == 0)
                 out = out * (1 - driving_mask) + driving_image * driving_mask
 
-            output_dict["deformed"] = out
+            output_dict["deformed"] = self.deform_input(source_image, deformation)
         
         out = torch.cat([out, F.interpolate(driving_mesh_image[:, [0]], out.shape[2:])], dim=1)
         out = self.first(out)

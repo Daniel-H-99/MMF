@@ -16,7 +16,10 @@ from modules.generator import OcclusionAwareGenerator
 from modules.keypoint_detector import KPDetector
 from animate import normalize_kp
 from scipy.spatial import ConvexHull
-import ffmpeg
+import os
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,2,3'
+
 
 if sys.version_info[0] < 3:
     raise Exception("You must use Python 3 or higher. Recommended version is Python 3.7")
@@ -26,8 +29,7 @@ def load_checkpoints(config_path, checkpoint_path, cpu=False):
     with open(config_path) as f:
         config = yaml.load(f)
 
-    generator = OcclusionAwareGenerator(**config['model_params']['generator_params'],
-                                        **config['model_params']['common_params'])
+    generator = OcclusionAwareGenerator(**config['model_params']['generator_params'], **config['model_params']['common_params'])
     if not cpu:
         generator.cuda()
 
@@ -54,7 +56,9 @@ def load_checkpoints(config_path, checkpoint_path, cpu=False):
     return generator, kp_detector
 
 
-def make_animation(source_image, driving_video, generator, kp_detector, relative=True, adapt_movement_scale=True, cpu=False):
+
+
+def make_animation(video, mesh, driving_video, driving_mesh, generator, kp_detector, relative=True, adapt_movement_scale=True, cpu=False):
     with torch.no_grad():
         predictions = []
         source = torch.tensor(source_image[np.newaxis].astype(np.float32)).permute(0, 3, 1, 2)
@@ -64,7 +68,7 @@ def make_animation(source_image, driving_video, generator, kp_detector, relative
         kp_source = kp_detector(source)
         kp_driving_initial = kp_detector(driving[:, :, 0])
 
-        for frame_idx in tqdm(range(driving.shape[2])):
+        for frame_idx in tqdm(range(source.shape[2])):
             driving_frame = driving[:, :, frame_idx]
             if not cpu:
                 driving_frame = driving_frame.cuda()
@@ -154,4 +158,4 @@ if __name__ == "__main__":
     else:
         predictions = make_animation(source_image, driving_video, generator, kp_detector, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
     imageio.mimsave(opt.result_video, [img_as_ubyte(frame) for frame in predictions], fps=fps)
-    ffmpeg.output(ffmpeg.input(os.path.join(opt.vid_dir, 'pre_' + opt.result_video)), ffmpeg.input(os.path.join(opt.vid_dir, 'audio.wav')), os.path.join(opt.vid_dir, opt.result_video)).overwrite_output().run()
+

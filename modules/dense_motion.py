@@ -3,56 +3,6 @@ import torch.nn.functional as F
 import torch
 from modules.util import Hourglass, AntiAliasInterpolation2d, make_coordinate_grid, kp2gaussian
 
-class Conv2d(nn.Module):
-    def __init__(self, cin, cout, kernel_size, stride, padding, residual=False, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.conv_block = nn.Sequential(
-                            nn.Conv2d(cin, cout, kernel_size, stride, padding),
-                            nn.BatchNorm2d(cout)
-                            )
-        self.act = nn.ReLU()
-        self.residual = residual
-
-    def forward(self, x):
-        out = self.conv_block(x)
-        if self.residual:
-            out += x
-        return self.act(out)
-
-class Encoder(nn.Module):
-    def __init__(self, output_dim=20):
-        super(Encoder, self).__init__()
-        self.encoder = nn.Sequential(
-            Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
-            Conv2d(32, 32, kernel_size=3, stride=1, padding=1, residual=True),
-            Conv2d(32, 32, kernel_size=3, stride=1, padding=1, residual=True),
-
-            Conv2d(32, 64, kernel_size=3, stride=(3, 1), padding=1),
-            Conv2d(64, 64, kernel_size=3, stride=1, padding=1, residual=True),
-            Conv2d(64, 64, kernel_size=3, stride=1, padding=1, residual=True),
-
-            Conv2d(64, 128, kernel_size=3, stride=3, padding=1),
-            Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
-            Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
-
-            Conv2d(128, 256, kernel_size=3, stride=(3, 2), padding=1),
-            Conv2d(256, 256, kernel_size=3, stride=1, padding=1, residual=True),
-
-            Conv2d(256, 512, kernel_size=3, stride=1, padding=0),
-            Conv2d(512, 512, kernel_size=1, stride=1, padding=0),)
-        
-        self.fc = nn.Linear(512, output_dim)
-        
-    def forward(self, x):
-        out = self.encoder(x).flatten(start_dim=1)
-        out = self.fc(nn.ReLU()(out))
-        return out
-    
-    def update(self, audio, target):
-        pass
-    def infer(self, audio):
-        pass
-        
 
 class MeshDenseMotionNetwork(nn.Module):
     """
@@ -60,9 +10,9 @@ class MeshDenseMotionNetwork(nn.Module):
     """
 
     def __init__(self, block_expansion, num_blocks, max_features, num_kp, num_channels, estimate_occlusion_map=False,
-                 scale_factor=1, kp_variance=0.01, use_mesh=False, prior_from_audio=False):
+                 scale_factor=1, kp_variance=0.01, use_mesh=False):
         super(MeshDenseMotionNetwork, self).__init__()
-        self.hourglass = Hourglass(block_expansion=block_expansion, in_features=use_mesh,
+        self.hourglass = Hourglass(block_expansion=block_expansion, in_features=(num_kp + 1) * num_channels + use_mesh,
                                    max_features=max_features, num_blocks=num_blocks)
 
         self.mask = nn.Conv2d(self.hourglass.out_filters, num_kp + 1, kernel_size=(7, 7), padding=(3, 3))
@@ -75,13 +25,7 @@ class MeshDenseMotionNetwork(nn.Module):
         self.num_kp = num_kp
         self.scale_factor = scale_factor
         self.kp_variance = kp_variance
-
-        self.prior_from_audio = prior_from_audio
-        if self.prior_from_audio:
-            self.motion_prior = Encoder(output_dim=num_kp * 3)
-        else:
-            self.motion_prior = nn.Linear(38 * 3, num_kp * 3)
-
+        self.motion_prior = nn.Linear(38 * 2, num_kp * 2)
         if self.scale_factor != 1:
             self.down = AntiAliasInterpolation2d(num_channels, self.scale_factor)
 
@@ -120,17 +64,6 @@ class MeshDenseMotionNetwork(nn.Module):
         sparse_deformed = sparse_deformed.view((bs, self.num_kp + 1, -1, h, w))
         return sparse_deformed
 
-    def denormalize_kp(self, R, t, c, normalized):
-        # R: B x 3 x 3
-        # t: B x 3 x 1
-        # c: B
-        # normalized: B x K x 3
-        tmp = normalized.unsqueeze(3) - t.unsqueeze(1)
-        tmp = torch.einsum('bij,bcjk->bcik', R.inverse(), tmp)
-        tmp = tmp / c[:, None, None, None]     
-        denormalized = tmp.squeeze(3)  # B x K x 3 x 1
-        return denormalized
-
     def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None):
         if self.scale_factor != 1:
             source_image = self.down(source_image)
@@ -138,22 +71,19 @@ class MeshDenseMotionNetwork(nn.Module):
         bs, _, h, w = source_image.shape
 
         out_dict = dict()
-        kp_driving['value'] = self.denormalize_kp(kp_driving['mesh']['R'], kp_driving['mesh']['t'], kp_driving['mesh']['c'], \
-            self.motion_prior(kp_driving['value']).view(bs, -1, 3))[:, :, :2]
-        kp_source['value'] = self.denormalize_kp(kp_source['mesh']['R'], kp_source['mesh']['t'], kp_source['mesh']['c'], \
-            self.motion_prior(kp_source['value']).view(bs, -1, 3))[:, :, :2]
+        kp_driving['value'] = self.motion_prior(kp_driving['value'].flatten(start_dim=-2)).view(bs, -1, 2)
+        kp_source['value'] = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1 ,2)
 
         sparse_motion = self.create_sparse_motions(source_image, kp_driving, kp_source)
-        # deformed_source = self.create_deformed_source_image(source_image, sparse_motion)
-        # out_dict['sparse_deformed'] = deformed_source
+        deformed_source = self.create_deformed_source_image(source_image, sparse_motion)
+        out_dict['sparse_deformed'] = deformed_source
 
-        # input = deformed_source
-        # input = input.view(bs, -1, h, w)
+        input = deformed_source
+        input = input.view(bs, -1, h, w)
         if driving_mesh_image is not None:
             # print(input.shape)
             # print(driving_mesh_image.shape)
-            # input = torch.cat([input, driving_mesh_image[:, [0]]], dim=1)
-            input = driving_mesh_image[:, [0]]
+            input = torch.cat([input, driving_mesh_image[:, [0]]], dim=1)
 
         prediction = self.hourglass(input)
 

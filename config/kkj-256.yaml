@@ -39,7 +39,6 @@ model_params:
       num_blocks: 5
       scale_factor: 1
       use_mesh: True
-      prior_from_audio: True
   discriminator_params:
     scales: [1]
     block_expansion: 32

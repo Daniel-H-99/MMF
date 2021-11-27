@@ -97,7 +97,7 @@ class MeshFramesDataset(Dataset):
         video_name = os.path.basename(path)
     
         frames = sorted(os.listdir(os.path.join(path, 'img')))
-        num_frames = min(500, len(frames))
+        num_frames = len(frames)
         frame_idx = np.random.choice(num_frames, replace=True, size=2) if self.is_train else range(num_frames)
 
         if self.is_train:
@@ -149,9 +149,9 @@ class MeshFramesDataset(Dataset):
             t_array = [reference_t for idx in frame_idx]
             c_array = [reference_c for idx in frame_idx]
 
-            mesh_dict = 'driving_mesh_dict'
+            mesh_dict = 'reenact_mesh'
             driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
-            driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'driving_mesh_image', frames[idx]))) for idx in frame_idx]
+            driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'reenact_mesh_image', frames[idx]))) for idx in frame_idx]
             driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
             
         video_array = np.array(video_array, dtype='float32')

@@ -10,9 +10,9 @@ class MeshDenseMotionNetwork(nn.Module):
     """
 
     def __init__(self, block_expansion, num_blocks, max_features, num_kp, num_channels, estimate_occlusion_map=False,
-                 scale_factor=1, kp_variance=0.01, use_mesh=False):
+                 scale_factor=1, kp_variance=0.01, use_mesh=False, prior_from_audio=False):
         super(MeshDenseMotionNetwork, self).__init__()
-        self.hourglass = Hourglass(block_expansion=block_expansion, in_features=(num_kp + 1) * num_channels + use_mesh,
+        self.hourglass = Hourglass(block_expansion=block_expansion, in_features=use_mesh,
                                    max_features=max_features, num_blocks=num_blocks)
 
         self.mask = nn.Conv2d(self.hourglass.out_filters, num_kp + 1, kernel_size=(7, 7), padding=(3, 3))
@@ -25,7 +25,13 @@ class MeshDenseMotionNetwork(nn.Module):
         self.num_kp = num_kp
         self.scale_factor = scale_factor
         self.kp_variance = kp_variance
-        self.motion_prior = nn.Linear(38 * 2, num_kp * 2)
+
+        self.prior_from_audio = prior_from_audio
+        if self.prior_from_audio:
+            self.motion_prior = Encoder(output_dim=num_kp * 3)
+        else:
+            self.motion_prior = nn.Linear(38 * 2, num_kp * 2)
+
         if self.scale_factor != 1:
             self.down = AntiAliasInterpolation2d(num_channels, self.scale_factor)
 
@@ -64,6 +70,17 @@ class MeshDenseMotionNetwork(nn.Module):
         sparse_deformed = sparse_deformed.view((bs, self.num_kp + 1, -1, h, w))
         return sparse_deformed
 
+    def denormalize_kp(self, R, t, c, normalized):
+        # R: B x 3 x 3
+        # t: B x 3 x 1
+        # c: B
+        # normalized: B x K x 3
+        tmp = normalized.unsqueeze(3) - t.unsqueeze(1)
+        tmp = torch.einsum('bij,bcjk->bcik', R.inverse(), tmp)
+        tmp = tmp / c[:, None, None, None]     
+        denormalized = tmp.squeeze(3)  # B x K x 3 x 1
+        return denormalized
+
     def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None):
         if self.scale_factor != 1:
             source_image = self.down(source_image)
@@ -72,18 +89,19 @@ class MeshDenseMotionNetwork(nn.Module):
 
         out_dict = dict()
         kp_driving['value'] = self.motion_prior(kp_driving['value'].flatten(start_dim=-2)).view(bs, -1, 2)
-        kp_source['value'] = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1 ,2)
+        kp_source['value'] = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1, 2)
 
         sparse_motion = self.create_sparse_motions(source_image, kp_driving, kp_source)
-        deformed_source = self.create_deformed_source_image(source_image, sparse_motion)
-        out_dict['sparse_deformed'] = deformed_source
+        # deformed_source = self.create_deformed_source_image(source_image, sparse_motion)
+        # out_dict['sparse_deformed'] = deformed_source
 
-        input = deformed_source
-        input = input.view(bs, -1, h, w)
+        # input = deformed_source
+        # input = input.view(bs, -1, h, w)
         if driving_mesh_image is not None:
             # print(input.shape)
             # print(driving_mesh_image.shape)
-            input = torch.cat([input, driving_mesh_image[:, [0]]], dim=1)
+            # input = torch.cat([input, driving_mesh_image[:, [0]]], dim=1)
+            input = driving_mesh_image[:, [0]]
 
         prediction = self.hourglass(input)
 

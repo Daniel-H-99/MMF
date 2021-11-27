@@ -60,16 +60,25 @@ def get_dataset(path):
     num_frames = min(len(frames), 500)
     frame_idx = range(num_frames)
 
-    mesh_dict = 'mesh_dict'
-    video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
-    mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
-    R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
-    t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
-    c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
-    mesh_dict = 'driving_mesh_dict'
-    driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
-    driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'driving_mesh_image', frames[idx]))) for idx in frame_idx]
+    reference_frame_path = os.path.join(path, 'frame_reference.png')
+    reference_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
+    reference_frame = img_as_float32(io.imread(reference_frame_path))
+    reference_mesh = np.array(list(reference_mesh_dict.values())[:478])
+    reference_R = np.array(reference_mesh_dict['R'])
+    reference_t = np.array(reference_mesh_dict['t'])
+    reference_c = np.array(reference_mesh_dict['c'])
 
+    video_array = [reference_frame for idx in frame_idx]
+    mesh_array = [reference_mesh for idx in frame_idx]
+    R_array = [reference_R for idx in frame_idx]
+    t_array = [reference_t for idx in frame_idx]
+    c_array = [reference_c for idx in frame_idx]
+
+    mesh_dict = 'mesh_dict_reenact'
+    driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
+    driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image_reenact', frames[idx]))) for idx in frame_idx]
+    driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
+    
     video_array = np.array(video_array, dtype='float32')
     mesh_array = np.array(mesh_array, dtype='float32') / 128 - 1
     R_array = np.array(R_array, dtype='float32')
@@ -80,29 +89,32 @@ def get_dataset(path):
     out = {}
 
     driving_video_array = np.array(driving_video_array, dtype='float32')
+    driving_mesh_img_array = np.array(driving_mesh_img_array, dtype='float32')
     driving_mesh_array = np.array(driving_mesh_array, dtype='float32') / 128 - 1
     video = video_array
     out['video'] = video.transpose((3, 0, 1, 2))
     out['mesh'] = {'mesh': mesh_array, 'R': R_array, 't': t_array, 'c': c_array}
     out['driving_video'] = driving_video_array.transpose((3, 0, 1, 2))
+    out['driving_mesh_img'] = driving_mesh_img_array.transpose((3, 0, 1, 2))
     out['driving_mesh'] = {'mesh': driving_mesh_array, 'R': R_array, 't': t_array, 'c': c_array}
     out['driving_name'] = video_name
     out['source_name'] = video_name
-
     return out
 
-def make_animation(source_video, driving_video, source_mesh, driving_mesh, generator, relative=True, adapt_movement_scale=True, cpu=False):
+def make_animation(source_video, driving_video, source_mesh, driving_mesh, driving_mesh_img, generator, relative=True, adapt_movement_scale=True, cpu=False):
     with torch.no_grad():
         predictions = []
         source = torch.tensor(np.array(source_video)[np.newaxis].astype(np.float32))
         driving = torch.tensor(np.array(driving_video)[np.newaxis].astype(np.float32))
-        
+        driving_mesh_img = torch.tensor(np.array(driving_mesh_img)[np.newaxis].astype(np.float32))
+
         for frame_idx in tqdm(range(driving.shape[2])):
             driving_frame = driving[:, :, frame_idx]
+            driving_mesh_frame = driving_mesh_img[:, :, frame_idx]
             source_frame = source[:, :, frame_idx]
 
             kp_driving = preprocess_mesh(driving_mesh['mesh'][frame_idx])
-            kp_source = preprocess_mesh(driving_mesh['mesh'][frame_idx])
+            kp_source = preprocess_mesh(source_mesh['mesh'][frame_idx])
 
             if not cpu:
                 driving_frame = driving_frame.cuda()
@@ -110,9 +122,9 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, gener
                 kp_driving['value'] = kp_driving['value'].cuda()
                 kp_source['value'] = kp_source['value'].cuda()
 
-            out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_frame)
+            out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_frame, driving_image=driving_frame)
+            predictions.append(np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0])
 
-            predictions.append(np.transpose(out['deformed'].data.cpu().numpy(), [0, 2, 3, 1])[0])
     return predictions
 
 def find_best_frame(source, driving, cpu=False):
@@ -172,6 +184,6 @@ if __name__ == "__main__":
 
     generator = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, cpu=opt.cpu)
     dataset = get_dataset(opt.vid_dir)
-    predictions = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
+    predictions = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
     imageio.mimsave(os.path.join(opt.vid_dir, 'pre_' + opt.result_video), [img_as_ubyte(frame) for frame in predictions], fps=fps)
-    ffmpeg.output(ffmpeg.input(os.path.join(opt.vid_dir, 'pre_' + opt.result_video)), ffmpeg.input(os.path.join(opt.vid_dir, 'audio.wav')), os.path.join(opt.vid_dir, opt.result_video)).run()
+    ffmpeg.output(ffmpeg.input(os.path.join(opt.vid_dir, 'pre_' + opt.result_video)), ffmpeg.input(os.path.join(opt.vid_dir, 'audio.wav')), os.path.join(opt.vid_dir, opt.result_video)).overwrite_output().run()

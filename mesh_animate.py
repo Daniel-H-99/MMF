@@ -63,7 +63,7 @@ def animate(config, generator, checkpoint, log_dir, dataset):
                 kp_source = preprocess_mesh(mesh['mesh'][:, frame_idx])
                 out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_image, driving_image=driving_frame)
 
-                del out['sparse_deformed']
+                # del out['sparse_deformed']
 
                 predictions.append(np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0])
 

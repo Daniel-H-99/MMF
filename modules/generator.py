@@ -83,8 +83,8 @@ class MeshOcclusionAwareGenerator(nn.Module):
                 out = out * occlusion_map
 
             if driving_image is not None:
-                driving_mask = output_dict['mask'][:, [0]].detach()
-                driving_mask *= (driving_mesh_image[:, [0]] == 0)
+                # driving_mask = output_dict['mask'][:, [0]].detach()
+                driving_mask = (driving_mesh_image[:, [0]] == 0).byte()
                 out = out * (1 - driving_mask) + driving_image * driving_mask
 
             output_dict["deformed"] = out

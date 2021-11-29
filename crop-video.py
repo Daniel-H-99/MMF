@@ -80,6 +80,7 @@ def compute_bbox_trajectories(trajectories, fps, frame_shape, args):
         if (end - start) > args.min_frames:
             command = compute_bbox(start, end, fps, tube_bbox, frame_shape, inp=args.inp, image_shape=args.image_shape, increase_area=args.increase)
             commands.append(command)
+    print(commands)
     return commands
 
 

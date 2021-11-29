@@ -39,10 +39,16 @@ class MeshDenseMotionNetwork(nn.Module):
         """
         Eq 4. in the paper T_{s<-d}(z)
         """
+        # driving_z: B x H x W x 1
+        driving_z = kp_driving['z']
+        source_normed_z = kp_source['normed_z']
         bs, _, h, w = source_image.shape
         identity_grid = make_coordinate_grid((h, w), type=kp_source['value'].type())
-        identity_grid = identity_grid.view(1, 1, h, w, 2)
-        coordinate_grid = identity_grid - kp_driving['value'].view(bs, self.num_kp, 1, 1, 2)
+        identity_grid = identity_grid.view(1, 1, h, w, 2).repeat(bs, 1, 1, 1, 1)
+        identity_3d_grid = torch.cat([identity_grid, driving_z.unsqueeze(1)], dim=4) # 1 x 1 x H x W x 3
+        normalized_grid = self.normalize_point(kp_driving['R'], kp_driving['t'], kp_driving['c'], identity_3d_grid)[:, :, :, :, :2] # B x 1 x H x W x 2
+        # print("normalized_grid size: {}".format(normalized_grid.shape))
+        coordinate_grid = normalized_grid - kp_driving['value'].view(bs, self.num_kp, 1, 1, 2)
         # if 'jacobian' in kp_driving:
         #     jacobian = torch.matmul(kp_source['jacobian'], torch.inverse(kp_driving['jacobian']))
         #     # print("jacobian 2 size: {}".format(jacobian.shape))
@@ -52,9 +58,13 @@ class MeshDenseMotionNetwork(nn.Module):
         #     coordinate_grid = coordinate_grid.squeeze(-1)
 
         driving_to_source = coordinate_grid + kp_source['value'].view(bs, self.num_kp, 1, 1, 2)
-
+        # print("driving_to_source size: {}".format(driving_to_source.shape))
+        driving_to_source = torch.cat([driving_to_source, source_normed_z.unsqueeze(1).repeat(1, self.num_kp, 1, 1, 1)], dim=4)
+        driving_to_source = self.denormalize_point(kp_source['R'], kp_source['t'], kp_source['c'], driving_to_source)[:, :, :, :, :2]
+        # print("denormalized shape: {}".format(driving_to_source.shape))
         #adding background feature
-        identity_grid = identity_grid.repeat(bs, 1, 1, 1, 1)
+        # identity_grid = identity_grid.repeat(bs, 1, 1, 1, 1)
+        # print("identity_grid shape: {}".format(identity_grid.shape))
         sparse_motions = torch.cat([identity_grid, driving_to_source], dim=1)
         return sparse_motions
 
@@ -70,15 +80,27 @@ class MeshDenseMotionNetwork(nn.Module):
         sparse_deformed = sparse_deformed.view((bs, self.num_kp + 1, -1, h, w))
         return sparse_deformed
 
-    def denormalize_kp(self, R, t, c, normalized):
+    def normalize_point(self, R, t, c, raw):
         # R: B x 3 x 3
         # t: B x 3 x 1
         # c: B
-        # normalized: B x K x 3
-        tmp = normalized.unsqueeze(3) - t.unsqueeze(1)
-        tmp = torch.einsum('bij,bcjk->bcik', R.inverse(), tmp)
-        tmp = tmp / c[:, None, None, None]     
-        denormalized = tmp.squeeze(3)  # B x K x 3 x 1
+        # raw: B x K x H x W x 3
+        tmp = torch.einsum('bij,bchwjk->bchwik', R, raw.unsqueeze(5)) # B x K x H x W x 3 x 1
+        tmp *= c.view(-1, 1, 1, 1, 1, 1) # B x K x H x W x 3 x 1
+        tmp += t.unsqueeze(1).unsqueeze(2).unsqueeze(3) # B x 1 x 1 x 1 x 3 x 1
+        normalized = tmp.squeeze(5) / 128 - 1 # B x K x H x W x 3
+
+        return normalized
+
+    def denormalize_point(self, R, t, c, normalized):
+        # R: B x 3 x 3
+        # t: B x 3 x 1
+        # c: B
+        # normalized: B x K x H x W x 3
+        tmp = 128 * (normalized.unsqueeze(5) + 1) - t.unsqueeze(1).unsqueeze(2).unsqueeze(3)
+        tmp = torch.einsum('bij,bchwjk->bchwik', R.inverse(), tmp)
+        tmp = tmp / c.view(-1, 1, 1, 1, 1, 1)     
+        denormalized = tmp.squeeze(5)  # B x K x H x W x 3
         return denormalized
 
     def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None):
@@ -88,10 +110,12 @@ class MeshDenseMotionNetwork(nn.Module):
         bs, _, h, w = source_image.shape
 
         out_dict = dict()
+        # print('kp value shape: {}'.format(kp_driving['value'].flatten(start_dim=-2).shape))
         kp_driving['value'] = self.motion_prior(kp_driving['value'].flatten(start_dim=-2)).view(bs, -1, 2)
         kp_source['value'] = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1, 2)
 
         sparse_motion = self.create_sparse_motions(source_image, kp_driving, kp_source)
+
         # deformed_source = self.create_deformed_source_image(source_image, sparse_motion)
         # out_dict['sparse_deformed'] = deformed_source
 
@@ -111,14 +135,11 @@ class MeshDenseMotionNetwork(nn.Module):
         mask = mask.unsqueeze(2)
         sparse_motion = sparse_motion.permute(0, 1, 4, 2, 3)
         deformation = (sparse_motion * mask).sum(dim=1)
-        deformation = deformation.permute(0, 2, 3, 1)
-
+        deformation = deformation.permute(0, 2, 3, 1)   # B x H x W x 2
+        
         out_dict['deformation'] = deformation
 
-        # Sec. 3.2 in the paper
-        if self.occlusion:
-            occlusion_map = torch.sigmoid(self.occlusion(prediction))
-            out_dict['occlusion_map'] = occlusion_map
+
 
         return out_dict
 

@@ -14,10 +14,13 @@ from sync_batchnorm import DataParallelWithCallback
 
 import ffmpeg
 
-def preprocess_mesh(m):
+def preprocess_mesh(m, frame_idx):
     roi = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
-    res = dict()
-    res['value'] = m[:, roi, :2]
+    res = m.copy()
+    for key in res.keys():
+        res[key] = res[key][:, frame_idx]
+    # print('raw shape: {}'.format(res['normed_mesh'].shape))
+    res['value'] = res['normed_mesh'][:, roi, :2]
     return res
 
 def animate(config, generator, checkpoint, log_dir, dataset):
@@ -59,8 +62,8 @@ def animate(config, generator, checkpoint, log_dir, dataset):
                 driving_mesh_image = driving_mesh_img[:, :, frame_idx]
                 driving_frame = driving_video[:, :, frame_idx]
                 source_frame = video[:, :, frame_idx]
-                kp_driving = preprocess_mesh(driving_mesh['mesh'][:, frame_idx])
-                kp_source = preprocess_mesh(mesh['mesh'][:, frame_idx])
+                kp_driving = preprocess_mesh(driving_mesh, frame_idx)
+                kp_source = preprocess_mesh(mesh, frame_idx)
                 out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_image, driving_image=driving_frame)
 
                 # del out['sparse_deformed']

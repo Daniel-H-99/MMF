@@ -17,6 +17,7 @@ from modules.generator import MeshOcclusionAwareGenerator
 from scipy.spatial import ConvexHull
 import os
 import ffmpeg
+import cv2
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
@@ -24,10 +25,14 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 if sys.version_info[0] < 3:
     raise Exception("You must use Python 3 or higher. Recommended version is Python 3.7")
 
-def preprocess_mesh(m):
+def preprocess_mesh(m, frame_idx):
     roi = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
-    res = dict()
-    res['value'] = torch.from_numpy(m[roi, :2]).unsqueeze(0)
+    res = m.copy()
+    for key in res.keys():
+        # print('{} shape: {}'.format(key, torch.tensor(res[key][frame_idx]).shape))
+        res[key] = torch.tensor(res[key][frame_idx])[None].float().cuda()
+    # print('raw shape: {}'.format(res['normed_mesh'].shape))
+    res['value'] = res['normed_mesh'][:, roi, :2]
     return res
 
 def load_checkpoints(config_path, checkpoint_path, cpu=False):
@@ -62,41 +67,61 @@ def get_dataset(path):
 
     reference_frame_path = os.path.join(path, 'frame_reference.png')
     reference_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
+    reference_normed_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
     reference_frame = img_as_float32(io.imread(reference_frame_path))
     reference_mesh = np.array(list(reference_mesh_dict.values())[:478])
+    reference_normed_mesh = np.array(list(reference_normed_mesh_dict.values())[:478])
     reference_R = np.array(reference_mesh_dict['R'])
     reference_t = np.array(reference_mesh_dict['t'])
     reference_c = np.array(reference_mesh_dict['c'])
-
+    reference_normed_z = torch.load(os.path.join(path, 'z_reference_normalized.pt'))
     video_array = [reference_frame for idx in frame_idx]
     mesh_array = [reference_mesh for idx in frame_idx]
+    normed_mesh_array = [reference_normed_mesh for idx in frame_idx]
+    z_array = [reference_normed_z for idx in frame_idx]
     R_array = [reference_R for idx in frame_idx]
     t_array = [reference_t for idx in frame_idx]
     c_array = [reference_c for idx in frame_idx]
 
     mesh_dict = 'mesh_dict_reenact'
+    normed_mesh_dict = 'mesh_dict_reenact_normalized'
     driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
+    driving_normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
     driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image_reenact', frames[idx]))) for idx in frame_idx]
     driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
-    
+    driving_z_array = [torch.load(os.path.join(path, 'z_reenact', frames[idx].replace('.png', '.pt'))) for idx in frame_idx]
+    driving_R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
+    driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
+    driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
+
     video_array = np.array(video_array, dtype='float32')
     mesh_array = np.array(mesh_array, dtype='float32') / 128 - 1
+    normed_mesh_array = np.array(normed_mesh_array, dtype='float32') / 128 - 1
     R_array = np.array(R_array, dtype='float32')
     c_array = np.array(c_array, dtype='float32') * 128
     t_array = np.array(t_array, dtype='float32')
     t_array = t_array + np.matmul(R_array, (c_array[:, None, None] * np.ones_like(t_array)))
-
+    z_array = torch.stack(z_array, dim=0).float() / 128 - 1
     out = {}
+
 
     driving_video_array = np.array(driving_video_array, dtype='float32')
     driving_mesh_img_array = np.array(driving_mesh_img_array, dtype='float32')
     driving_mesh_array = np.array(driving_mesh_array, dtype='float32') / 128 - 1
+    driving_normed_mesh_array = np.array(driving_normed_mesh_array, dtype='float32') / 128 - 1
+    driving_z_array = torch.stack(driving_z_array, dim=0).float() / 128 - 1
+    driving_R_array = np.array(driving_R_array, dtype='float32')
+    driving_c_array = np.array(driving_c_array, dtype='float32') * 128
+    driving_t_array = np.array(driving_t_array, dtype='float32')
+    driving_t_array = driving_t_array + np.matmul(driving_R_array, (driving_c_array[:, None, None] * np.ones_like(driving_t_array)))
+
+
     video = video_array
     out['video'] = video.transpose((3, 0, 1, 2))
-    out['mesh'] = {'mesh': mesh_array, 'R': R_array, 't': t_array, 'c': c_array}
+    out['mesh'] = {'mesh': mesh_array, 'normed_mesh': normed_mesh_array, 'R': R_array, 't': t_array, 'c': c_array, 'normed_z': z_array}
     out['driving_video'] = driving_video_array.transpose((3, 0, 1, 2))
     out['driving_mesh_img'] = driving_mesh_img_array.transpose((3, 0, 1, 2))
-    out['driving_mesh'] = {'mesh': driving_mesh_array, 'R': R_array, 't': t_array, 'c': c_array}
+    out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array}
     out['driving_name'] = video_name
     out['source_name'] = video_name
     return out
@@ -113,14 +138,14 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, drivi
             driving_mesh_frame = driving_mesh_img[:, :, frame_idx]
             source_frame = source[:, :, frame_idx]
 
-            kp_driving = preprocess_mesh(driving_mesh['mesh'][frame_idx])
-            kp_source = preprocess_mesh(source_mesh['mesh'][frame_idx])
+            kp_driving = preprocess_mesh(driving_mesh, frame_idx)
+            kp_source = preprocess_mesh(source_mesh, frame_idx)
 
             if not cpu:
                 driving_frame = driving_frame.cuda()
                 source_frame = source_frame.cuda()
-                kp_driving['value'] = kp_driving['value'].cuda()
-                kp_source['value'] = kp_source['value'].cuda()
+                # kp_driving['value'] = kp_driving['value'].cuda()
+                # kp_source['value'] = kp_source['value'].cuda()
 
             out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_frame, driving_image=driving_frame)
             predictions.append(np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0])
@@ -185,5 +210,8 @@ if __name__ == "__main__":
     generator = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, cpu=opt.cpu)
     dataset = get_dataset(opt.vid_dir)
     predictions = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
+    os.makedirs(os.path.join(opt.vid_dir, 'demo_img'), exist_ok=True)
+    for i, pred in tqdm(enumerate(predictions)):
+        cv2.imwrite(os.path.join(opt.vid_dir, 'demo_img', '{:05d}.png'.format(i + 1)), img_as_ubyte(pred).transpose(2, 1, 0))
     imageio.mimsave(os.path.join(opt.vid_dir, 'pre_' + opt.result_video), [img_as_ubyte(frame) for frame in predictions], fps=fps)
     ffmpeg.output(ffmpeg.input(os.path.join(opt.vid_dir, 'pre_' + opt.result_video)), ffmpeg.input(os.path.join(opt.vid_dir, 'audio.wav')), os.path.join(opt.vid_dir, opt.result_video)).overwrite_output().run()

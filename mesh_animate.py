@@ -64,20 +64,18 @@ def animate(config, generator, checkpoint, log_dir, dataset):
                 source_frame = video[:, :, frame_idx]
                 kp_driving = preprocess_mesh(driving_mesh, frame_idx)
                 kp_source = preprocess_mesh(mesh, frame_idx)
-                out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_image, driving_image=driving_frame)
 
+                out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_image, driving_image=driving_frame)
+                out['mesh_image_real'] = x['mesh_image_real'][:, :, frame_idx]
+                out['mesh_image_reenact'] = x['driving_mesh_img'][:, :, frame_idx]
                 # del out['sparse_deformed']
 
                 predictions.append(np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0])
 
-                visualization = Visualizer(**config['visualizer_params']).visualize(source=source_frame,
+                visualization = Visualizer(**config['visualizer_params']).visualize_animation(source=source_frame,
                                                                                     driving=driving_frame, out=out)
                 visualization = visualization
                 visualizations.append(visualization)
-
-            predictions = np.concatenate(predictions, axis=1)
-            result_name = "-".join([x['driving_name'][0], x['source_name'][0]])
-            imageio.imsave(os.path.join(png_dir, result_name + '.png'), (255 * predictions).astype(np.uint8))
 
             image_name = result_name + animate_params['format']
             imageio.mimsave(os.path.join(log_dir, image_name), visualizations, fps=25)

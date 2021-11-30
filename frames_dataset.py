@@ -162,6 +162,8 @@ class MeshFramesDataset(Dataset):
 
             mesh_dict = 'mesh_dict_reenact'
             normed_mesh_dict = 'mesh_dict_reenact_normalized'
+            real_mesh_dict = 'mesh_dict'
+            real_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[idx]))) for idx in frame_idx]
             driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
             driving_normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
             driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image_reenact', frames[idx]))) for idx in frame_idx]
@@ -224,6 +226,7 @@ class MeshFramesDataset(Dataset):
             out['source_mesh_image'] = source_mesh_image.transpose((2, 0, 1))
             out['name'] = video_name
         else:
+            real_mesh_img_array = np.array(real_mesh_img_array, dtype='float32')
             driving_video_array = np.array(driving_video_array, dtype='float32')
             driving_mesh_img_array = np.array(driving_mesh_img_array, dtype='float32')
             driving_mesh_array = np.array(driving_mesh_array, dtype='float32') / 128 - 1
@@ -241,8 +244,10 @@ class MeshFramesDataset(Dataset):
             out['driving_video'] = driving_video_array.transpose((3, 0, 1, 2))
             out['driving_mesh_img'] = driving_mesh_img_array.transpose((3, 0, 1, 2))
             out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array}
+            out['mesh_image_real'] = real_mesh_img_array.transpose((3, 0, 1, 2))
             out['driving_name'] = video_name
             out['source_name'] = video_name
+
         return out
 
 class FramesDataset(Dataset):

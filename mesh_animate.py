@@ -77,6 +77,7 @@ def animate(config, generator, checkpoint, log_dir, dataset):
                 visualization = visualization
                 visualizations.append(visualization)
 
+            result_name = "-".join([x['driving_name'][0], x['source_name'][0]])
             image_name = result_name + animate_params['format']
             imageio.mimsave(os.path.join(log_dir, image_name), visualizations, fps=25)
             data_dir = os.path.join(config['dataset_params']['root_dir'], x['driving_name'][0])

@@ -85,33 +85,62 @@ class MeshFramesDataset(Dataset):
             self.transform = AllAugmentationWithMeshTransform(**augmentation_params)
         else:
             self.transform = None
+        print('Dataset size: {}'.format(self.__len__()))
 
     def __len__(self):
-        return len(self.videos)
+        length = 0
+        for vid in self.videos:
+            path = os.path.join(self.root_dir, vid)
+            num_frames = len(os.listdir(os.path.join(path, 'img')))
+            length += num_frames
+        return length
 
     def __getitem__(self, idx):
 
-        name = self.videos[idx]
+        name = self.videos[0]
         path = os.path.join(self.root_dir, name)
 
         video_name = os.path.basename(path)
     
         frames = sorted(os.listdir(os.path.join(path, 'img')))
         num_frames = len(frames)
-        frame_idx = np.random.choice(num_frames, replace=True, size=2) if self.is_train else range(min(500, num_frames))
+        frame_idx = [idx] if self.is_train else range(min(500, num_frames))
 
         if self.is_train:
+            reference_frame_path = os.path.join(path, 'frame_reference.png')
+            reference_mesh_image_path = os.path.join(path, 'mesh_image_reference.png')
+            reference_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
+            reference_normed_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
+            reference_frame = img_as_float32(io.imread(reference_frame_path))
+            reference_mesh_image = img_as_float32(io.imread(reference_mesh_image_path))
+            reference_mesh = np.array(list(reference_mesh_dict.values())[:478])
+            reference_normed_mesh = np.array(list(reference_normed_mesh_dict.values())[:478])
+            reference_R = np.array(reference_mesh_dict['R'])
+            reference_t = np.array(reference_mesh_dict['t'])
+            reference_c = np.array(reference_mesh_dict['c'])
+            reference_z = torch.load(os.path.join(path, 'z_reference.pt'))
+            reference_normed_z = torch.load(os.path.join(path, 'z_reference_normalized.pt'))
+            video_array = [reference_frame]
+            mesh_img_array = [reference_mesh_image]
+            mesh_array = [reference_mesh]
+            normed_mesh_array = [reference_normed_mesh]
+            z_array = [reference_z]
+            normed_z_array = [reference_normed_z]
+            R_array = [reference_R]
+            t_array = [reference_t]
+            c_array = [reference_c]
+            
             mesh_dicts = [torch.load(os.path.join(path, 'mesh_dict', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]
             mesh_dicts_normed = [torch.load(os.path.join(path, 'mesh_dict_normalized', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]
-            R_array = [np.array(mesh_dict['R']) for mesh_dict in mesh_dicts]
-            t_array = [np.array(mesh_dict['t']) for mesh_dict in mesh_dicts]
-            c_array = [np.array(mesh_dict['c']) for mesh_dict in mesh_dicts]
-            mesh_array = [np.array(list(mesh_dict.values())[:478]) for mesh_dict in mesh_dicts]
-            normed_mesh_array = [np.array(list(mesh_dict_normed.values())[:478]) for mesh_dict_normed in mesh_dicts_normed]
-            z_array = [torch.load(os.path.join(path, 'z', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]
-            normed_z_array = [torch.load(os.path.join(path, 'z_normalized', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]
-            video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[frame_idx[i]]))) for i in range(len(frame_idx))]
-            mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[frame_idx[i]]))) for i in range(len(frame_idx))]
+            R_array += [np.array(mesh_dict['R']) for mesh_dict in mesh_dicts]
+            t_array += [np.array(mesh_dict['t']) for mesh_dict in mesh_dicts]
+            c_array += [np.array(mesh_dict['c']) for mesh_dict in mesh_dicts]
+            mesh_array += [np.array(list(mesh_dict.values())[:478]) for mesh_dict in mesh_dicts]
+            normed_mesh_array += [np.array(list(mesh_dict_normed.values())[:478]) for mesh_dict_normed in mesh_dicts_normed]
+            z_array += [torch.load(os.path.join(path, 'z', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]
+            normed_z_array += [torch.load(os.path.join(path, 'z_normalized', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]
+            video_array += [img_as_float32(io.imread(os.path.join(path, 'img', frames[frame_idx[i]]))) for i in range(len(frame_idx))]
+            mesh_img_array += [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[frame_idx[i]]))) for i in range(len(frame_idx))]
             if self.num_dummy_set > 0:
                 dummy_idx = random.randrange(self.num_dummy_set)
                 dummy_mesh_dict = f'mesh_dict_dummy_{dummy_idx}'
@@ -128,13 +157,17 @@ class MeshFramesDataset(Dataset):
                 c_array.append(c_array[1])
                 mesh_array.append(mesh_array[1])
                 normed_mesh_array.append(normed_mesh_array[1])
-                video_array.append(img_as_float32(io.imread(os.path.join(path, 'img', frames[frame_idx[1] - 1]))))
+                video_array.append(img_as_float32(io.imread(os.path.join(path, 'img', frames[frame_idx[0] - 1]))))
                 mesh_img_array.append(mesh_img_array[1])
                 z_array.append(z_array[1])
                 normed_z_array.append(normed_z_array[1])
 
             if self.transform is not None:
                 video_array, mesh_array, R_array, t_array, c_array, mesh_img_array = self.transform(video_array, mesh_array, R_array, t_array, c_array, mesh_img_array)
+
+            if self.transform is not None:
+                video_array, mesh
+
         else:
             # mesh_dict = 'mesh_dict'
             # video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
@@ -249,6 +282,7 @@ class MeshFramesDataset(Dataset):
             out['source_name'] = video_name
 
         return out
+
 
 class FramesDataset(Dataset):
     """

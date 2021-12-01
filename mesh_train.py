@@ -45,8 +45,10 @@ def train(config, generator, discriminator, checkpoint, log_dir, dataset, device
         discriminator_full = DataParallelWithCallback(discriminator_full, device_ids=device_ids)
 
     with Logger(log_dir=log_dir, visualizer_params=config['visualizer_params'], checkpoint_freq=train_params['checkpoint_freq']) as logger:
-        for epoch in trange(start_epoch, train_params['num_epochs']):
-            for x in tqdm(dataloader):
+        epoch = start_epoch
+        for _ in trange(0, 200):
+            for step, x in tqdm(enumerate(dataloader)):
+                print('epoch - step: {} - {}'.format(epoch, step))
                 losses_generator, generated = generator_full(x)
 
                 loss_values = [val.mean() for val in losses_generator.values()]
@@ -72,10 +74,11 @@ def train(config, generator, discriminator, checkpoint, log_dir, dataset, device
                 losses = {key: value.mean().detach().data.cpu().numpy() for key, value in losses_generator.items()}
                 logger.log_iter(losses=losses)
 
-            scheduler_generator.step()
-            scheduler_discriminator.step()
-            
-            logger.log_epoch(epoch, {'generator': generator,
-                                     'discriminator': discriminator,
-                                     'optimizer_generator': optimizer_generator,
-                                     'optimizer_discriminator': optimizer_discriminator}, inp=x, out=generated)
+                if (step + 1) % train_params['log_freq'] == 0:
+                    logger.log_epoch(epoch, {'generator': generator,
+                                        'discriminator': discriminator,
+                                        'optimizer_generator': optimizer_generator,
+                                        'optimizer_discriminator': optimizer_discriminator}, inp=x, out=generated)
+                    epoch += 1
+                    
+                   

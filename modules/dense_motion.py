@@ -57,7 +57,8 @@ class MeshDenseMotionNetwork(nn.Module):
         #     coordinate_grid = torch.matmul(jacobian, coordinate_grid.unsqueeze(-1))
         #     coordinate_grid = coordinate_grid.squeeze(-1)
 
-        driving_to_source = coordinate_grid + kp_source['value'].view(bs, self.num_kp, 1, 1, 2)
+        driving_to_source = coordinate_grid
+        # driving_to_source = coordinate_grid + kp_source['value'].view(bs, self.num_kp, 1, 1, 2)
         # print("driving_to_source size: {}".format(driving_to_source.shape))
         driving_to_source = torch.cat([driving_to_source, source_normed_z.unsqueeze(1).repeat(1, self.num_kp, 1, 1, 1)], dim=4)
         driving_to_source = self.denormalize_point(kp_source['R'], kp_source['t'], kp_source['c'], driving_to_source)[:, :, :, :, :2]

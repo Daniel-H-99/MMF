@@ -7,7 +7,7 @@ dataset_params:
   num_dummy_set: 0
   augmentation_params:
     flip_param:
-      horizontal_flip: True
+      horizontal_flip: False
       time_flip: False
     jitter_param:
       brightness: 0.1
@@ -48,7 +48,8 @@ model_params:
     use_mesh: True
 train_params:
   num_epochs: 200
-  num_repeats: 1500
+  num_repeats: 1
+  log_freq: 100
   epoch_milestones: [60, 90]
   lr_generator: 2.0e-4
   lr_discriminator: 2.0e-4

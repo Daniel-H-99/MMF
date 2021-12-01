@@ -117,7 +117,6 @@ def get_dataset(path):
     z_array = torch.stack(z_array, dim=0).float() / 128 - 1
     out = {}
 
-
     driving_video_array = np.array(driving_video_array, dtype='float32')
     driving_mesh_img_array = np.array(driving_mesh_img_array, dtype='float32')
     driving_mesh_array = np.array(driving_mesh_array, dtype='float32') / 128 - 1

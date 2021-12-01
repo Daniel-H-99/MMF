@@ -206,3 +206,26 @@ class Visualizer:
         image = self.create_image_grid(*images)
         image = (255 * image).astype(np.uint8)
         return image
+
+    def visualize_animation(self, driving, source, out):
+        images = []
+
+        driving = driving.data.cpu().numpy()
+        driving = np.transpose(driving, [0, 2, 3, 1])
+        images.append(driving)
+
+        real_mesh = out['mesh_image_real'].data.cpu().numpy()
+        real_mesh = np.transpose(real_mesh, [0, 2, 3, 1])
+        images.append(real_mesh)
+
+        reenact_mesh = out['mesh_image_reenact'].data.cpu().numpy()
+        reenact_mesh = np.transpose(reenact_mesh, [0, 2, 3, 1])
+        images.append(reenact_mesh)
+
+        result = out['prediction'].data.cpu().numpy()
+        result = np.transpose(result, [0, 2, 3, 1])
+        images.append(result)
+
+        image = self.create_image_grid(*images)
+        image = (255 * image).astype(np.uint8)
+        return image

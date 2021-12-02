@@ -303,6 +303,7 @@ if __name__ == "__main__":
     # save_searched_mesh(searched_mesh, os.path.join(opt.vid_dir, 'mesh_dict_search'))
 
     image_rows = image_cols = 256
+    draw_mesh_images(os.path.join(opt.vid_dir, 'mesh_dict_searched_normalized'), os.path.join(opt.vid_dir, 'mesh_image_searched_normalized'), image_rows, image_cols)
     draw_mesh_images(os.path.join(opt.vid_dir, 'mesh_dict_searched'), os.path.join(opt.vid_dir, 'mesh_image_searched'), image_rows, image_cols)
     interpolate_zs(os.path.join(opt.vid_dir, 'mesh_dict_searched'), os.path.join(opt.vid_dir, 'z_searched'), image_rows, image_cols)
     interpolate_zs(os.path.join(opt.vid_dir, 'mesh_dict_searched_normalized'), os.path.join(opt.vid_dir, 'z_searched_normalized'), image_rows, image_cols)

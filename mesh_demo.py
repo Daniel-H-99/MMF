@@ -204,6 +204,7 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, drivi
             normalised_landmark_dict = mesh_tensor_to_landmarkdict(normlaised_geometry)
             
             geometry = (torch.matmul(RT, (geometry.transpose(0, 1) - t)) / c).transpose(0, 1).cpu().detach()
+            geometry = 128 * (geometry + 1)
             landmark_dict = mesh_tensor_to_landmarkdict(geometry)
             landmark_dict.update({'R': R.cpu().numpy(), 't': t.cpu().numpy(), 'c': c.cpu().numpy()})
             torch.save(normalised_landmark_dict, os.path.join(opt.vid_dir,'mesh_dict_searched_normalized',filename))

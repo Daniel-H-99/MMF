@@ -3,6 +3,55 @@ import torch.nn.functional as F
 import torch
 from modules.util import Hourglass, AntiAliasInterpolation2d, make_coordinate_grid, kp2gaussian
 
+class Conv2d(nn.Module):
+    def __init__(self, cin, cout, kernel_size, stride, padding, residual=False, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.conv_block = nn.Sequential(
+                            nn.Conv2d(cin, cout, kernel_size, stride, padding),
+                            nn.BatchNorm2d(cout)
+                            )
+        self.act = nn.ReLU()
+        self.residual = residual
+
+    def forward(self, x):
+        out = self.conv_block(x)
+        if self.residual:
+            out += x
+        return self.act(out)
+
+class Encoder(nn.Module):
+    def __init__(self, output_dim=20):
+        super(Encoder, self).__init__()
+        self.encoder = nn.Sequential(
+            Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
+            Conv2d(32, 32, kernel_size=3, stride=1, padding=1, residual=True),
+            Conv2d(32, 32, kernel_size=3, stride=1, padding=1, residual=True),
+
+            Conv2d(32, 64, kernel_size=3, stride=(3, 1), padding=1),
+            Conv2d(64, 64, kernel_size=3, stride=1, padding=1, residual=True),
+            Conv2d(64, 64, kernel_size=3, stride=1, padding=1, residual=True),
+
+            Conv2d(64, 128, kernel_size=3, stride=3, padding=1),
+            Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
+            Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
+
+            Conv2d(128, 256, kernel_size=3, stride=(3, 2), padding=1),
+            Conv2d(256, 256, kernel_size=3, stride=1, padding=1, residual=True),
+
+            Conv2d(256, 512, kernel_size=3, stride=1, padding=0),
+            Conv2d(512, 512, kernel_size=1, stride=1, padding=0),)
+        
+        self.fc = nn.Linear(512, output_dim)
+        
+    def forward(self, x):
+        out = self.encoder(x).flatten(start_dim=1)
+        out = self.fc(nn.ReLU()(out))
+        return out
+    
+    def update(self, audio, target):
+        pass
+    def infer(self, audio):
+        pass
 
 class MeshDenseMotionNetwork(nn.Module):
     """
@@ -10,7 +59,7 @@ class MeshDenseMotionNetwork(nn.Module):
     """
 
     def __init__(self, block_expansion, num_blocks, max_features, num_kp, num_channels, estimate_occlusion_map=False,
-                 scale_factor=1, kp_variance=0.01, use_mesh=False, prior_from_audio=False):
+                 scale_factor=1, kp_variance=0.01, use_mesh=False, prior_from_audio=False, T=1.0):
         super(MeshDenseMotionNetwork, self).__init__()
         self.hourglass = Hourglass(block_expansion=block_expansion, in_features=use_mesh,
                                    max_features=max_features, num_blocks=num_blocks)
@@ -26,12 +75,13 @@ class MeshDenseMotionNetwork(nn.Module):
         self.scale_factor = scale_factor
         self.kp_variance = kp_variance
 
+        self.motion_prior = nn.Linear(38 * 2, num_kp * 2)
+
         self.prior_from_audio = prior_from_audio
         if self.prior_from_audio:
-            self.motion_prior = Encoder(output_dim=num_kp * 3)
-        else:
-            self.motion_prior = nn.Linear(38 * 2, num_kp * 2)
-
+            self.audio_prior = Encoder(output_dim=num_kp * 2)
+            self.T = T
+            self.roi = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
         if self.scale_factor != 1:
             self.down = AntiAliasInterpolation2d(num_channels, self.scale_factor)
 
@@ -104,7 +154,17 @@ class MeshDenseMotionNetwork(nn.Module):
         denormalized = tmp.squeeze(5)  # B x K x H x W x 3
         return denormalized
 
-    def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None):
+    def search_from_pool(self, audio_prior, pool):
+        # audio_prior: B x prior_dim
+        key_pool, mesh_pool = pool # P x prior_dim, P x N x 3
+        weights = audio_prior.unsqueeze(1) - key_pool.unsqueeze(0)  # B x P x prior_dim
+        weights = weights ** 2  # B x P x prior_dim
+        weights = weights.sum(dim=2)    # B x P
+        weights = nn.Softmax(dim=1)(-weights / self.T) # B x P
+        result = torch.einsum('bp,pni->bni', weights, mesh_pool) # B x N x 3
+        return result
+
+    def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None, pool=None):
         if self.scale_factor != 1:
             source_image = self.down(source_image)
 
@@ -112,8 +172,15 @@ class MeshDenseMotionNetwork(nn.Module):
 
         out_dict = dict()
         # print('kp value shape: {}'.format(kp_driving['value'].flatten(start_dim=-2).shape))
+        
+        if self.prior_from_audio:
+            prior = self.audio_prior(kp_driving['value'])
+            searched_mesh = self.search_from_pool(prior, pool)
+            out_dict['searched_mesh'] = searched_mesh # B x N x 3
+            kp_driving['value'] = searched_mesh[:, self.roi, :2]
         kp_driving['value'] = self.motion_prior(kp_driving['value'].flatten(start_dim=-2)).view(bs, -1, 2)
-        kp_source['value'] = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1, 2)
+        # kp_source['value'] = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1, 2)
+        
 
         sparse_motion = self.create_sparse_motions(source_image, kp_driving, kp_source)
 

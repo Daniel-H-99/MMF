@@ -11,6 +11,7 @@ import pandas as pd
 from augmentation import AllAugmentationWithMeshTransform
 import glob
 import random
+import pickle as pkl
 
 def read_video(name, frame_shape):
     """
@@ -87,11 +88,27 @@ class MeshFramesDataset(Dataset):
             self.transform = None
         print('Dataset size: {}'.format(self.__len__()))
 
+        self.key_pool = torch.load(os.path.join(self.root_dir, self.videos[0], 'key_pool.pt')) # P0 x motion_dim
+        self.mesh_pool = torch.load(os.path.join(self.root_dir, self.videos[0], 'mesh_pool.pt')) # P0 x mesh_dim
+        audio_pool = []
+        name = self.videos[0]
+        path = os.path.join(self.root_dir, name)
+        video_name = os.path.basename(path)
+        frames = sorted(os.listdir(os.path.join(path, 'img')))
+        audio_frames = sorted(os.listdir(os.path.join(path, 'audio')))
+        num_frames = min(len(frames), len(audio_frames))
+        frame_idx = range(num_frames)
+        for i in range(len(frame_idx)):
+            with open(os.path.join(path, 'audio', '{:05d}.pickle'.format(int(frames[frame_idx[i]][:-4]) - 1)), 'rb') as f:
+                mspec = pkl.load(f)
+                audio_pool.append(mspec)
+        self.audio_pool = np.array(audio_pool).astype(np.float32)
+
     def __len__(self):
         length = 0
         for vid in self.videos:
             path = os.path.join(self.root_dir, vid)
-            num_frames = len(os.listdir(os.path.join(path, 'img')))
+            num_frames = min(len(os.listdir(os.path.join(path, 'img'))), len(os.listdir(os.path.join(path, 'audio'))))
             length += num_frames
         return length
 
@@ -130,6 +147,13 @@ class MeshFramesDataset(Dataset):
             t_array = [reference_t]
             c_array = [reference_c]
             
+            audio_array = []
+
+            for i in range(len(frame_idx)):
+                fid = int(frames[frame_idx[i]][:-4]) - 1
+                audio_array.append(self.audio_pool[fid])
+                audio_array.append(audio_array[0])
+
             mesh_dicts = [torch.load(os.path.join(path, 'mesh_dict', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]
             mesh_dicts_normed = [torch.load(os.path.join(path, 'mesh_dict_normalized', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]
             R_array += [np.array(mesh_dict['R']) for mesh_dict in mesh_dicts]
@@ -165,8 +189,6 @@ class MeshFramesDataset(Dataset):
             if self.transform is not None:
                 video_array, mesh_array, R_array, t_array, c_array, mesh_img_array = self.transform(video_array, mesh_array, R_array, t_array, c_array, mesh_img_array)
 
-            if self.transform is not None:
-                video_array, mesh
 
         else:
             # mesh_dict = 'mesh_dict'
@@ -193,6 +215,12 @@ class MeshFramesDataset(Dataset):
             t_array = [reference_t for idx in frame_idx]
             c_array = [reference_c for idx in frame_idx]
 
+            audio_array = []
+
+            for i in range(len(frame_idx)):
+                fid = int(frames[frame_idx[i]][:-4]) - 1
+                audio_array.append(self.audio_pool[fid])
+
             mesh_dict = 'mesh_dict_reenact'
             normed_mesh_dict = 'mesh_dict_reenact_normalized'
             real_mesh_dict = 'mesh_dict'
@@ -206,6 +234,7 @@ class MeshFramesDataset(Dataset):
             driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
             driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
 
+        audio_array = np.array(audio_array, dtype='float32')
         video_array = np.array(video_array, dtype='float32')
         if self.is_train:
             mesh_img_array = np.array(mesh_img_array, dtype='float32')
@@ -220,6 +249,8 @@ class MeshFramesDataset(Dataset):
 
         out = {}
         if self.is_train:
+            real_audio = audio_array[0]
+            driving_audio = audio_array[1]
             source = video_array[0]
             real = video_array[1]
             driving = video_array[2]
@@ -251,7 +282,7 @@ class MeshFramesDataset(Dataset):
             out['driving'] = driving.transpose((2, 0, 1))
             out['real'] = real.transpose((2, 0, 1))
             out['source'] = source.transpose((2, 0, 1))
-            out['driving_mesh'] = {'mesh': driving_mesh, 'normed_mesh': driving_normed_mesh, 'R': driving_R, 't': driving_t, 'c': driving_c, 'z': driving_z, 'normed_z': driving_normed_z}
+            out['driving_mesh'] = {'mesh': driving_mesh, 'normed_mesh': driving_normed_mesh, 'R': driving_R, 't': driving_t, 'c': driving_c, 'z': driving_z, 'normed_z': driving_normed_z, 'audio': driving_audio}
             out['real_mesh'] = {'mesh': real_mesh, 'normed_mesh': real_normed_mesh, 'R': real_R, 't': real_t, 'c': real_c, 'z': real_z, 'normed_z': real_normed_z}
             out['source_mesh'] = {'mesh': source_mesh, 'normed_mesh': source_normed_mesh, 'R': source_R, 't': source_t, 'c': source_c, 'z': source_z, 'normed_z': source_normed_z}
             out['driving_mesh_image'] = driving_mesh_image.transpose((2, 0, 1))
@@ -276,13 +307,16 @@ class MeshFramesDataset(Dataset):
             out['mesh'] = {'mesh': mesh_array, 'normed_mesh': normed_mesh_array, 'R': R_array, 't': t_array, 'c': c_array, 'normed_z': z_array}
             out['driving_video'] = driving_video_array.transpose((3, 0, 1, 2))
             out['driving_mesh_img'] = driving_mesh_img_array.transpose((3, 0, 1, 2))
-            out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array}
+            out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array, 'audio': audio_array}
             out['mesh_image_real'] = real_mesh_img_array.transpose((3, 0, 1, 2))
             out['driving_name'] = video_name
             out['source_name'] = video_name
 
         return out
 
+    def get_pool(self, P=1000):
+        index = torch.randint(0, len(self.key_pool), (P,))
+        return self.key_pool[index], self.mesh_pool[index] # P x motion
 
 class FramesDataset(Dataset):
     """

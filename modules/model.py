@@ -157,7 +157,7 @@ class MeshGeneratorFullModel(torch.nn.Module):
         kp_source = self.preprocess_mesh(x['source_mesh'])
         kp_driving = self.preprocess_mesh(x['driving_mesh'])
 
-        generated = self.generator(x['source'], kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=x['driving_mesh_image'], driving_image=x['driving'])
+        generated = self.generator(x['source'], kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=x['driving_mesh_image'], driving_image=x['driving'], pool=x['pool'])
         generated.update({'kp_source': kp_source, 'kp_driving': kp_driving})
 
         loss_values = {}
@@ -204,22 +204,31 @@ class MeshGeneratorFullModel(torch.nn.Module):
             deformation = generated['deformation']  # B x H x W x 2 
             driving_mesh = x['driving_mesh']['mesh'].cuda()[:, :, None, :2] # B x K x 1 x 2
             driving_mesh_roi = driving_mesh[:, roi]
+            driving_mesh_normalized = x['driving_mesh']['normed_mesh'].cuda()
             motion = F.grid_sample(deformation.permute(0, 3, 1, 2), driving_mesh).squeeze(3).permute(0, 2, 1).flatten(start_dim=1)   # B x K * 2
             motion_GT = x['source_mesh']['mesh'].cuda()[:, :, :2].flatten(start_dim=1) # B x K * 2
             motion_roi = F.grid_sample(deformation.permute(0, 3, 1, 2), driving_mesh_roi).squeeze(3).permute(0, 2, 1).flatten(start_dim=1) 
             motion_roi_GT = x['source_mesh']['mesh'].cuda()[:, roi, :2].flatten(start_dim=1) # B x K * 2
+            searched_mesh = generated['searched_mesh'] # B x N x 3
             background_loss = self.loss_weights['background'] * F.l1_loss(generated['mask'][:, 0] * bg_mask, torch.ones_like(bg_mask).float() * bg_mask)
             motion_loss = self.loss_weights['motion'] * F.mse_loss(motion, motion_GT)
             motion_roi_loss = self.loss_weights['motion_roi'] * F.l1_loss(motion_roi, motion_roi_GT)
+            searched_mesh_loss = self.loss_weights['motion'] * F.mse_loss(searched_mesh.flatten(start_dim=-2), driving_mesh_normalized.flatten(start_dim=-2))
+            searched_mesh_roi_loss = self.loss_weights['motion_roi'] * F.l1_loss(searched_mesh[:, roi].flatten(start_dim=-2), driving_mesh_normalized[:, roi].flatten(start_dim=-2))
             loss_values['bg'] = background_loss
             loss_values['motion'] = motion_loss
             loss_values['motion_roi'] = motion_roi_loss
+            loss_values['searched_mesh'] = searched_mesh_loss
+            loss_values['searched_mesh_roi'] = searched_mesh_roi_loss
         return loss_values, generated
 
     def preprocess_mesh(self, mesh):
         roi = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
         res = mesh
-        res['value'] = mesh['normed_mesh'][:, roi, :2]
+        if 'audio' in mesh:
+            res['value'] = mesh['audio']
+        else:
+            res['value'] = mesh['normed_mesh'][:, roi, :2]
         # res['jacobian'] = (mesh['R'].inverse()[:, :2, :2] / mesh['c'].unsqueeze(1).unsqueeze(2)).unsqueeze(1).repeat(1, res['value'].size(1), 1, 1)
 
         # print("jacobian shape: {}".format(res['jacobian'].shape))

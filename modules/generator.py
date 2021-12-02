@@ -55,19 +55,20 @@ class MeshOcclusionAwareGenerator(nn.Module):
             deformation = deformation.permute(0, 2, 3, 1)
         return F.grid_sample(inp, deformation)
 
-    def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None, driving_image=None):
+    def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None, driving_image=None, pool=None):
         # Encoding (downsampling) part
         # Transforming feature representation according to deformation and occlusion
         out = source_image
         output_dict = {}
         if self.dense_motion_network is not None:
             dense_motion = self.dense_motion_network(source_image=source_image, kp_driving=kp_driving,
-                                                     kp_source=kp_source, driving_mesh_image=driving_mesh_image)
+                                                     kp_source=kp_source, driving_mesh_image=driving_mesh_image, pool=pool)
             output_dict['kp_source'] = kp_source
             output_dict['kp_driving'] = kp_driving
             output_dict['mask'] = dense_motion['mask']  # B x K x H x W
             # output_dict['sparse_deformed'] = dense_motion['sparse_deformed']    # B  K x C x H x W
             output_dict['deformation'] = dense_motion['deformation']
+            output_dict['searched_mesh'] = dense_motion['searched_mesh']
             
             if 'occlusion_map' in dense_motion:
                 occlusion_map = dense_motion['occlusion_map']

@@ -52,7 +52,9 @@ class Logger:
                  optimizer_generator=None, optimizer_discriminator=None, optimizer_kp_detector=None):
         checkpoint = torch.load(checkpoint_path)
         if generator is not None:
-            generator.load_state_dict(checkpoint['generator'])
+            d = generator.state_dict()
+            d.update(checkpoint['generator'])
+            generator.load_state_dict(d)
         if kp_detector is not None:
             kp_detector.load_state_dict(checkpoint['kp_detector'])
         if discriminator is not None:
@@ -61,7 +63,9 @@ class Logger:
             except:
                print ('No discriminator in the state-dict. Dicriminator will be randomly initialized')
         if optimizer_generator is not None:
-            optimizer_generator.load_state_dict(checkpoint['optimizer_generator'])
+            d = optimizer_generator.state_dict()
+            d.update(checkpoint['optimizer_generator'])
+            optimizer_generator.load_state_dict(d)
         if optimizer_discriminator is not None:
             try:
                 optimizer_discriminator.load_state_dict(checkpoint['optimizer_discriminator'])

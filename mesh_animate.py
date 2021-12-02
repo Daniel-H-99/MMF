@@ -20,8 +20,14 @@ def preprocess_mesh(m, frame_idx):
     for key in res.keys():
         res[key] = res[key][:, frame_idx]
     # print('raw shape: {}'.format(res['normed_mesh'].shape))
-    res['value'] = res['normed_mesh'][:, roi, :2]
+    if 'audio' in m:
+        res['value'] = res['audio']
+    else:
+        res['value'] = res['normed_mesh'][:, roi, :2]
     return res
+    # res['jacobian'] = (mesh['R'].inverse()[:, :2, :2] / mesh['c'].unsqueeze(1).unsqueeze(2)).unsqueeze(1).repeat(1, res['value'].size(1), 1, 1)
+
+    # print("jacobian shape: {}".format(res['jacobian'].shape))
 
 def animate(config, generator, checkpoint, log_dir, dataset):
     log_dir = os.path.join(log_dir, 'animation')
@@ -51,7 +57,8 @@ def animate(config, generator, checkpoint, log_dir, dataset):
         with torch.no_grad():
             predictions = []
             visualizations = []
-
+            pool = dataloader.dataset.get_pool(animate_params['pool_size'])
+            x['pool'] = pool
             video = x['video']  # B x C x T x H x W
             mesh = x['mesh']    # B x T X :
             driving_video = x['driving_video']
@@ -65,7 +72,7 @@ def animate(config, generator, checkpoint, log_dir, dataset):
                 kp_driving = preprocess_mesh(driving_mesh, frame_idx)
                 kp_source = preprocess_mesh(mesh, frame_idx)
 
-                out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_image, driving_image=driving_frame)
+                out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_image, driving_image=driving_frame, pool=pool)
                 out['mesh_image_real'] = x['mesh_image_real'][:, :, frame_idx]
                 out['mesh_image_reenact'] = x['driving_mesh_img'][:, :, frame_idx]
                 # del out['sparse_deformed']
@@ -82,3 +89,4 @@ def animate(config, generator, checkpoint, log_dir, dataset):
             imageio.mimsave(os.path.join(log_dir, image_name), visualizations, fps=25)
             data_dir = os.path.join(config['dataset_params']['root_dir'], x['driving_name'][0])
             ffmpeg.output(ffmpeg.input(os.path.join(log_dir, image_name)), ffmpeg.input(os.path.join(data_dir, 'audio.wav')), os.path.join(data_dir, "animation.mp4")).overwrite_output().run()
+            break

@@ -17,29 +17,32 @@ from frames_dataset import DatasetRepeater
 def train(config, generator, discriminator, checkpoint, log_dir, dataset, device_ids):
     train_params = config['train_params']
 
-    optimizer_generator = torch.optim.Adam(generator.parameters(), lr=train_params['lr_generator'], betas=(0.5, 0.999))
-    optimizer_discriminator = torch.optim.Adam(discriminator.parameters(), lr=train_params['lr_discriminator'], betas=(0.5, 0.999))
+    optimizer_generator = torch.optim.Adam(generator.dense_motion_network.audio_prior.parameters(), lr=train_params['lr_generator'], betas=(0.5, 0.999))
 
     if checkpoint is not None:
-        start_epoch = Logger.load_cpk(checkpoint, generator, discriminator, None,
-                                      optimizer_generator, optimizer_discriminator,
-                                      None)
+        start_epoch = Logger.load_cpk(checkpoint, generator, discriminator, optimizer_generator=optimizer_generator)
     else:
         start_epoch = 0
 
     scheduler_generator = MultiStepLR(optimizer_generator, train_params['epoch_milestones'], gamma=0.1,
-                                      last_epoch=start_epoch - 1)
-    scheduler_discriminator = MultiStepLR(optimizer_discriminator, train_params['epoch_milestones'], gamma=0.1,
-                                          last_epoch=start_epoch - 1)
+                                      last_epoch= start_epoch - 1)
 
 
-    if 'num_repeats' in train_params or train_params['num_repeats'] != 1:
+    if 'num_repeats' in train_params and train_params['num_repeats'] != 1:
         dataset = DatasetRepeater(dataset, train_params['num_repeats'])
     dataloader = DataLoader(dataset, batch_size=train_params['batch_size'], shuffle=True, num_workers=6, drop_last=True)
 
     generator_full = MeshGeneratorFullModel(generator, discriminator, train_params)
     discriminator_full = MeshDiscriminatorFullModel(generator, discriminator, train_params)
 
+    # freeze models
+    for name, p in generator_full.named_parameters():
+        if 'audio_prior' not in name:
+            p.requires_grad = False
+    for name, p in generator.dense_motion_network.audio_prior.named_parameters():
+        p.requires_grad = True
+
+        
     if torch.cuda.is_available():
         generator_full = DataParallelWithCallback(generator_full, device_ids=device_ids)
         discriminator_full = DataParallelWithCallback(discriminator_full, device_ids=device_ids)
@@ -48,7 +51,8 @@ def train(config, generator, discriminator, checkpoint, log_dir, dataset, device
         epoch = start_epoch
         for _ in trange(0, 200):
             for step, x in tqdm(enumerate(dataloader)):
-                print('epoch - step: {} - {}'.format(epoch, step))
+                pool = dataloader.dataset.get_pool(train_params['pool_size'])
+                x['pool'] = pool
                 losses_generator, generated = generator_full(x)
 
                 loss_values = [val.mean() for val in losses_generator.values()]
@@ -58,27 +62,15 @@ def train(config, generator, discriminator, checkpoint, log_dir, dataset, device
                 optimizer_generator.step()
                 optimizer_generator.zero_grad()
 
-                if train_params['loss_weights']['generator_gan'] != 0:
-                    optimizer_discriminator.zero_grad()
-                    losses_discriminator = discriminator_full(x, generated)
-                    loss_values = [val.mean() for val in losses_discriminator.values()]
-                    loss = sum(loss_values)
-
-                    loss.backward()
-                    optimizer_discriminator.step()
-                    optimizer_discriminator.zero_grad()
-                else:
-                    losses_discriminator = {}
-
-                losses_generator.update(losses_discriminator)
                 losses = {key: value.mean().detach().data.cpu().numpy() for key, value in losses_generator.items()}
                 logger.log_iter(losses=losses)
 
                 if (step + 1) % train_params['log_freq'] == 0:
                     logger.log_epoch(epoch, {'generator': generator,
                                         'discriminator': discriminator,
-                                        'optimizer_generator': optimizer_generator,
-                                        'optimizer_discriminator': optimizer_discriminator}, inp=x, out=generated)
+                                        'optimizer_generator': optimizer_generator}, inp=x, out=generated)
                     epoch += 1
+                    scheduler_generator.step()
+
                     
                    

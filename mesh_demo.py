@@ -198,13 +198,16 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, drivi
             t = kp_driving['t'][0].cuda()
             c = kp_driving['c'][0].cuda()
 
+            t -= torch.matmul(R, (c * torch.ones_like(t)))
+            c /= 128
+            R = R
+
             base = 128 * (kp_driving['normed_mesh'] + 1)
             geometry = 128 * (out['searched_mesh'].view(-1, 3) + 1)
             normlaised_geometry = geometry.clone().detach()
             normalised_landmark_dict = mesh_tensor_to_landmarkdict(normlaised_geometry)
             
             geometry = (torch.matmul(RT, (geometry.transpose(0, 1) - t)) / c).transpose(0, 1).cpu().detach()
-            geometry = 128 * (geometry + 1)
             landmark_dict = mesh_tensor_to_landmarkdict(geometry)
             landmark_dict.update({'R': R.cpu().numpy(), 't': t.cpu().numpy(), 'c': c.cpu().numpy()})
             torch.save(normalised_landmark_dict, os.path.join(opt.vid_dir,'mesh_dict_searched_normalized',filename))

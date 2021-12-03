@@ -96,17 +96,17 @@ def get_dataset(path):
         driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
 
     else:
-        mesh_dict = 'mesh_dict_reenact'
-        normed_mesh_dict = 'mesh_dict_reenact_normalized'
+        mesh_dict = 'mesh_dict_searched'
+        normed_mesh_dict = 'mesh_dict_searched_normalized'
         driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
         driving_normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
-        driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image_reenact', frames[idx]))) for idx in frame_idx]
+        driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image_searched', frames[idx]))) for idx in frame_idx]
         driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
-        driving_z_array = [torch.load(os.path.join(path, 'z_reenact', frames[idx].replace('.png', '.pt'))) for idx in frame_idx]
+        driving_z_array = [torch.load(os.path.join(path, 'z_searched', frames[idx].replace('.png', '.pt'))) for idx in frame_idx]
         driving_R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
         driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
         driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
-
+        
     video_array = np.array(video_array, dtype='float32')
     mesh_array = np.array(mesh_array, dtype='float32') / 128 - 1
     normed_mesh_array = np.array(normed_mesh_array, dtype='float32') / 128 - 1
@@ -213,8 +213,6 @@ if __name__ == "__main__":
     parser.add_argument("--cpu", dest="cpu", action="store_true", help="cpu mode.")
 
     parser.add_argument("--use_raw", action="store_true", help="use raw dataset")
-
-    parser.add_argument("--T", default=1.0, help="temperature for searching")
  
 
     parser.set_defaults(relative=False)
@@ -226,7 +224,6 @@ if __name__ == "__main__":
 
     generator = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, cpu=opt.cpu)
     generator.module.dense_motion_network.prior_from_audio = False
-    generator.module.dense_motion_network.T = opt.T
     dataset = get_dataset(opt.vid_dir)
     predictions = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
     os.makedirs(os.path.join(opt.vid_dir, 'demo_img'), exist_ok=True)

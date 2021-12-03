@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from sync_batchnorm import DataParallelWithCallback
 
 from modules.generator import MeshOcclusionAwareGenerator
-from modules.util import mesh_tensor_to_landmarkdict, draw_mesh_images, interpolate_zs
+from modules.util import mesh_tensor_to_landmarkdict, draw_mesh_images, interpolate_zs, mix_mesh_tensor
 
 from scipy.spatial import ConvexHull
 import os
@@ -186,18 +186,21 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, drivi
             c /= 128
             R = R
 
-            base = 128 * (kp_driving['normed_mesh'] + 1)
+            normalized_base = 128 * (kp_driving['normed_mesh'][0] + 1)
+            base = 128 * (kp_driving['mesh'][0] + 1)
             geometry = 128 * (out['searched_mesh'].view(-1, 3) + 1)
-            normlaised_geometry = geometry.clone().detach()
-            normalised_landmark_dict = mesh_tensor_to_landmarkdict(normlaised_geometry)
+            normalised_geometry = geometry.clone().detach().cpu()
+            # normalised_geometry = mix_mesh_tensor(normalised_geometry, normalized_base.cpu())
+            normalised_landmark_dict = mesh_tensor_to_landmarkdict(normalised_geometry)
             
             geometry = (torch.matmul(RT, (geometry.transpose(0, 1) - t)) / c).transpose(0, 1).cpu().detach()
+            # geometry = mix_mesh_tensor(geometry, base.cpu())
             landmark_dict = mesh_tensor_to_landmarkdict(geometry)
             landmark_dict.update({'R': R.cpu().numpy(), 't': t.cpu().numpy(), 'c': c.cpu().numpy()})
             torch.save(normalised_landmark_dict, os.path.join(opt.vid_dir,'mesh_dict_searched_normalized',filename))
             torch.save(landmark_dict, os.path.join(opt.vid_dir, 'mesh_dict_searched', filename))
     
-    return predictions, searched_mesh, normed_mesh
+    return searched_mesh, normed_mesh
 
 def save_searched_mesh(searched_mesh_batch, save_dir):
     # searched_mesh_batch: L x N * 3
@@ -229,6 +232,7 @@ if __name__ == "__main__":
  
     parser.add_argument("--cpu", dest="cpu", action="store_true", help="cpu mode.")
     parser.add_argument("--use_raw", action="store_true", help="use raw dataset")
+    parser.add_argument("--T", type=float, default=1.0, help="temperature for searching")
  
 
     parser.set_defaults(relative=False)
@@ -238,13 +242,12 @@ if __name__ == "__main__":
 
     fps = 25
 
-    os.makedirs(os.path.join(opt.vid_dir, 'mesh_dict_searched'), exist_ok=True)
-    os.makedirs(os.path.join(opt.vid_dir, 'mesh_dict_searched_normalized'), exist_ok=True)
-
     generator = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, cpu=opt.cpu)
+    generator.module.dense_motion_network.prior_from_audio = True
+    generator.module.dense_motion_network.T = opt.T
     dataset = get_dataset(opt.vid_dir)
     pool = (torch.load(os.path.join(opt.vid_dir, 'key_pool.pt')).cuda(), torch.load(os.path.join(opt.vid_dir, 'mesh_pool.pt')).cuda())
-    predictions, searched_mesh, normed_mesh = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu, pool=pool)
+    searched_mesh, normed_mesh = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu, pool=pool)
     searched_mesh = torch.cat(searched_mesh, dim=0)
     normed_mesh = torch.cat(normed_mesh, dim=0)
     eval_loss = 100 * F.l1_loss(searched_mesh.flatten(start_dim=-2), normed_mesh.flatten(start_dim=-2))

@@ -68,7 +68,7 @@ class MeshOcclusionAwareGenerator(nn.Module):
             output_dict['mask'] = dense_motion['mask']  # B x K x H x W
             # output_dict['sparse_deformed'] = dense_motion['sparse_deformed']    # B  K x C x H x W
             output_dict['deformation'] = dense_motion['deformation']
-            if 'searched_mesh' in output_dict:
+            if 'searched_mesh' in dense_motion:
                 output_dict['searched_mesh'] = dense_motion['searched_mesh']
             
             if 'occlusion_map' in dense_motion:

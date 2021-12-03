@@ -10,16 +10,20 @@ import numpy as np
 from skimage.transform import resize
 from skimage import img_as_ubyte, img_as_float32, io
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from sync_batchnorm import DataParallelWithCallback
 
 from modules.generator import MeshOcclusionAwareGenerator
+from modules.util import mesh_tensor_to_landmarkdict, draw_mesh_images, interpolate_zs
 
 from scipy.spatial import ConvexHull
 import os
 import ffmpeg
 import cv2
+import pickle as pkl
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 
 if sys.version_info[0] < 3:
@@ -32,7 +36,10 @@ def preprocess_mesh(m, frame_idx):
         # print('{} shape: {}'.format(key, torch.tensor(res[key][frame_idx]).shape))
         res[key] = torch.tensor(res[key][frame_idx])[None].float().cuda()
     # print('raw shape: {}'.format(res['normed_mesh'].shape))
-    res['value'] = res['normed_mesh'][:, roi, :2]
+    if 'audio' in res:
+        res['value'] = res['audio']
+    else:
+        res['value'] = res['normed_mesh'][:, roi, :2]
     return res
 
 def load_checkpoints(config_path, checkpoint_path, cpu=False):
@@ -65,6 +72,16 @@ def get_dataset(path):
     num_frames = min(len(frames), 500)
     frame_idx = range(num_frames)
 
+    audio_pool = []
+    frames = sorted(os.listdir(os.path.join(path, 'img')))
+    num_frames = min(len(frames), len(os.listdir(os.path.join(path, 'audio'))))
+    frame_idx = range(num_frames)
+    for i in range(len(frame_idx)):
+        with open(os.path.join(path, 'audio', '{:05d}.pickle'.format(int(frames[frame_idx[i]][:-4]) - 1)), 'rb') as f:
+            mspec = pkl.load(f)
+            audio_pool.append(mspec)
+    audio_pool = np.array(audio_pool).astype(np.float32)
+
     reference_frame_path = os.path.join(path, 'frame_reference.png')
     reference_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
     reference_normed_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
@@ -83,29 +100,23 @@ def get_dataset(path):
     t_array = [reference_t for idx in frame_idx]
     c_array = [reference_c for idx in frame_idx]
 
-    if opt.use_raw:
-        mesh_dict = 'mesh_dict'
-        normed_mesh_dict = 'mesh_dict_normalized'
-        driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
-        driving_normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
-        driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[idx]))) for idx in frame_idx]
-        driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
-        driving_z_array = [torch.load(os.path.join(path, 'z', frames[idx].replace('.png', '.pt'))) for idx in frame_idx]
-        driving_R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
-        driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
-        driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
+    audio_array = []
 
-    else:
-        mesh_dict = 'mesh_dict_reenact'
-        normed_mesh_dict = 'mesh_dict_reenact_normalized'
-        driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
-        driving_normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
-        driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image_reenact', frames[idx]))) for idx in frame_idx]
-        driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
-        driving_z_array = [torch.load(os.path.join(path, 'z_reenact', frames[idx].replace('.png', '.pt'))) for idx in frame_idx]
-        driving_R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
-        driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
-        driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
+    for i in range(len(frame_idx)):
+        fid = int(frames[frame_idx[i]][:-4]) - 1
+        audio_array.append(audio_pool[fid])
+    audio_array = np.array(audio_array, dtype='float32')
+
+    mesh_dict = 'mesh_dict'
+    normed_mesh_dict = 'mesh_dict_normalized'
+    driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
+    driving_normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
+    driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[idx]))) for idx in frame_idx]
+    driving_video_array = [img_as_float32(io.imread(os.path.join(path, 'img', frames[idx]))) for idx in frame_idx]
+    driving_z_array = [torch.load(os.path.join(path, 'z', frames[idx].replace('.png', '.pt'))) for idx in frame_idx]
+    driving_R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
+    driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
+    driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
 
     video_array = np.array(video_array, dtype='float32')
     mesh_array = np.array(mesh_array, dtype='float32') / 128 - 1
@@ -134,18 +145,19 @@ def get_dataset(path):
     out['mesh'] = {'mesh': mesh_array, 'normed_mesh': normed_mesh_array, 'R': R_array, 't': t_array, 'c': c_array, 'normed_z': z_array}
     out['driving_video'] = driving_video_array.transpose((3, 0, 1, 2))
     out['driving_mesh_img'] = driving_mesh_img_array.transpose((3, 0, 1, 2))
-    out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array}
+    out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array, 'audio': audio_array}
     out['driving_name'] = video_name
     out['source_name'] = video_name
     return out
 
-def make_animation(source_video, driving_video, source_mesh, driving_mesh, driving_mesh_img, generator, relative=True, adapt_movement_scale=True, cpu=False):
+def make_animation(source_video, driving_video, source_mesh, driving_mesh, driving_mesh_img, generator, relative=True, adapt_movement_scale=True, cpu=False, pool=None):
     with torch.no_grad():
-        predictions = []
         source = torch.tensor(np.array(source_video)[np.newaxis].astype(np.float32))
         driving = torch.tensor(np.array(driving_video)[np.newaxis].astype(np.float32))
         driving_mesh_img = torch.tensor(np.array(driving_mesh_img)[np.newaxis].astype(np.float32))
 
+        searched_mesh = []
+        normed_mesh = []
         for frame_idx in tqdm(range(driving.shape[2])):
             driving_frame = driving[:, :, frame_idx]
             driving_mesh_frame = driving_mesh_img[:, :, frame_idx]
@@ -160,36 +172,41 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, drivi
                 # kp_driving['value'] = kp_driving['value'].cuda()
                 # kp_source['value'] = kp_source['value'].cuda()
 
-            out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_frame, driving_image=driving_frame)
-            predictions.append(np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0])
+            out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_frame, driving_image=driving_frame, pool=pool)
+            searched_mesh.append(out['searched_mesh'])
+            normed_mesh.append(kp_driving['normed_mesh'])
 
-    return predictions
+            filename = '{:05d}.pt'.format(frame_idx + 1)
+            R = kp_driving['R'][0].cuda()
+            RT = R.transpose(0, 1)
+            t = kp_driving['t'][0].cuda()
+            c = kp_driving['c'][0].cuda()
 
-def find_best_frame(source, driving, cpu=False):
-    import face_alignment
+            t -= torch.matmul(R, (c * torch.ones_like(t)))
+            c /= 128
+            R = R
 
-    def normalize_kp(kp):
-        kp = kp - kp.mean(axis=0, keepdims=True)
-        area = ConvexHull(kp[:, :2]).volume
-        area = np.sqrt(area)
-        kp[:, :2] = kp[:, :2] / area
-        return kp
+            base = 128 * (kp_driving['normed_mesh'] + 1)
+            geometry = 128 * (out['searched_mesh'].view(-1, 3) + 1)
+            normlaised_geometry = geometry.clone().detach()
+            normalised_landmark_dict = mesh_tensor_to_landmarkdict(normlaised_geometry)
+            
+            geometry = (torch.matmul(RT, (geometry.transpose(0, 1) - t)) / c).transpose(0, 1).cpu().detach()
+            landmark_dict = mesh_tensor_to_landmarkdict(geometry)
+            landmark_dict.update({'R': R.cpu().numpy(), 't': t.cpu().numpy(), 'c': c.cpu().numpy()})
+            torch.save(normalised_landmark_dict, os.path.join(opt.vid_dir,'mesh_dict_searched_normalized',filename))
+            torch.save(landmark_dict, os.path.join(opt.vid_dir, 'mesh_dict_searched', filename))
+    
+    return predictions, searched_mesh, normed_mesh
 
-    fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D, flip_input=True,
-                                      device='cpu' if cpu else 'cuda')
-    kp_source = fa.get_landmarks(255 * source)[0]
-    kp_source = normalize_kp(kp_source)
-    norm  = float('inf')
-    frame_num = 0
-    for i, image in tqdm(enumerate(driving)):
-        kp_driving = fa.get_landmarks(255 * image)[0]
-        kp_driving = normalize_kp(kp_driving)
-        new_norm = (np.abs(kp_source - kp_driving) ** 2).sum()
-        if new_norm < norm:
-            norm = new_norm
-            frame_num = i
-    return frame_num
-
+def save_searched_mesh(searched_mesh_batch, save_dir):
+    # searched_mesh_batch: L x N * 3
+    os.makedirs(save_dir, exist_ok=True)
+    for i in tqdm(range(len(searched_mesh_batch))):
+        mesh = searched_mesh_batch[i].view(-1, 3)   # N x 3
+        mesh_dict = mesh_tensor_to_landmarkdict(mesh)
+        torch.save(mesh_dict, os.path.join(save_dir, '{:05d}.pt'.format(i + 1)))
+    
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", required=True, help="path to config")
@@ -211,10 +228,7 @@ if __name__ == "__main__":
                         help="Set frame to start from.")
  
     parser.add_argument("--cpu", dest="cpu", action="store_true", help="cpu mode.")
-
     parser.add_argument("--use_raw", action="store_true", help="use raw dataset")
-
-    parser.add_argument("--T", default=1.0, help="temperature for searching")
  
 
     parser.set_defaults(relative=False)
@@ -224,17 +238,22 @@ if __name__ == "__main__":
 
     fps = 25
 
+    os.makedirs(os.path.join(opt.vid_dir, 'mesh_dict_searched'), exist_ok=True)
+    os.makedirs(os.path.join(opt.vid_dir, 'mesh_dict_searched_normalized'), exist_ok=True)
+
     generator = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, cpu=opt.cpu)
-    generator.module.dense_motion_network.prior_from_audio = False
-    generator.module.dense_motion_network.T = opt.T
     dataset = get_dataset(opt.vid_dir)
-    predictions = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
-    os.makedirs(os.path.join(opt.vid_dir, 'demo_img'), exist_ok=True)
-    for i, pred in tqdm(enumerate(predictions)):
-        cv2.imwrite(os.path.join(opt.vid_dir, 'demo_img', '{:05d}.png'.format(i + 1)), img_as_ubyte(pred)[:, :, [2, 1, 0]])
-    imageio.mimsave(os.path.join(opt.vid_dir, 'pre_' + opt.result_video), [img_as_ubyte(frame) for frame in predictions], fps=fps)
-    if opt.use_raw:
-        audio_name = '_audio.wav'
-    else:
-        audio_name = 'audio.wav'
-    ffmpeg.output(ffmpeg.input(os.path.join(opt.vid_dir, 'pre_' + opt.result_video)), ffmpeg.input(os.path.join(opt.vid_dir, audio_name)), os.path.join(opt.vid_dir, opt.result_video)).overwrite_output().run()
+    pool = (torch.load(os.path.join(opt.vid_dir, 'key_pool.pt')).cuda(), torch.load(os.path.join(opt.vid_dir, 'mesh_pool.pt')).cuda())
+    predictions, searched_mesh, normed_mesh = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu, pool=pool)
+    searched_mesh = torch.cat(searched_mesh, dim=0)
+    normed_mesh = torch.cat(normed_mesh, dim=0)
+    eval_loss = 100 * F.l1_loss(searched_mesh.flatten(start_dim=-2), normed_mesh.flatten(start_dim=-2))
+    print('used temperature: {}'.format(generator.module.dense_motion_network.T))
+    print('eval loss: {}'.format(eval_loss))
+
+    image_rows = image_cols = 256
+    draw_mesh_images(os.path.join(opt.vid_dir, 'mesh_dict_searched_normalized'), os.path.join(opt.vid_dir, 'mesh_image_searched_normalized'), image_rows, image_cols)
+    draw_mesh_images(os.path.join(opt.vid_dir, 'mesh_dict_searched'), os.path.join(opt.vid_dir, 'mesh_image_searched'), image_rows, image_cols)
+    interpolate_zs(os.path.join(opt.vid_dir, 'mesh_dict_searched'), os.path.join(opt.vid_dir, 'z_searched'), image_rows, image_cols)
+    interpolate_zs(os.path.join(opt.vid_dir, 'mesh_dict_searched_normalized'), os.path.join(opt.vid_dir, 'z_searched_normalized'), image_rows, image_cols)
+

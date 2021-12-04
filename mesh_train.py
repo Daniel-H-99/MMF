@@ -20,7 +20,10 @@ def train(config, generator, discriminator, checkpoint, log_dir, dataset, device
     optimizer_generator = torch.optim.Adam(generator.dense_motion_network.audio_prior.parameters(), lr=train_params['lr_generator'], betas=(0.5, 0.999))
 
     if checkpoint is not None:
-        start_epoch = Logger.load_cpk(checkpoint, generator, discriminator, optimizer_generator=optimizer_generator)
+        start_epoch = Logger.load_cpk(checkpoint, generator, discriminator)
+        start_epoch = 0
+
+        # start_epoch = Logger.load_cpk(checkpoint, generator, discriminator, optimizer_generator=optimizer_generator)
     else:
         start_epoch = 0
 

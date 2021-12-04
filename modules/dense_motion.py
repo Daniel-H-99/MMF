@@ -160,8 +160,12 @@ class MeshDenseMotionNetwork(nn.Module):
         weights = audio_prior.unsqueeze(1) - key_pool.unsqueeze(0)  # B x P x prior_dim
         weights = weights ** 2  # B x P x prior_dim
         weights = weights.sum(dim=2)    # B x P
-        weights = nn.Softmax(dim=1)(-weights / self.T) # B x P
-        result = torch.einsum('bp,pni->bni', weights, mesh_pool) # B x N x 3
+        # best choice
+        best_index = weights.argmin(dim=1) # B
+        result = mesh_pool[best_index] # B x N x 3
+        # weighted sum
+        # weights = nn.Softmax(dim=1)(-weights / self.T) # B x P
+        # result = torch.einsum('bp,pni->bni', weights, mesh_pool) # B x N x 3
         return result
 
     def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None, pool=None):
@@ -175,10 +179,11 @@ class MeshDenseMotionNetwork(nn.Module):
         
         if self.prior_from_audio:
             prior = self.audio_prior(kp_driving['value'])
-            searched_mesh = self.search_from_pool(prior, pool)
+            searched_mesh = self.search_from_pool(prior, pool).detach()
             out_dict['searched_mesh'] = searched_mesh # B x N x 3
-            kp_driving['value'] = searched_mesh[:, self.roi, :2]
-        kp_driving['value'] = self.motion_prior(kp_driving['value'].flatten(start_dim=-2)).view(bs, -1, 2)
+            kp_driving['value'] = prior.view(bs, -1, 2)
+        else:
+            kp_driving['value'] = self.motion_prior(kp_driving['value'].flatten(start_dim=-2)).view(bs, -1, 2)
         # kp_source['value'] = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1, 2)
         
 

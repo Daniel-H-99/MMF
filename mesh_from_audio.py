@@ -23,7 +23,7 @@ import ffmpeg
 import cv2
 import pickle as pkl
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
 
 if sys.version_info[0] < 3:
@@ -36,10 +36,7 @@ def preprocess_mesh(m, frame_idx):
         # print('{} shape: {}'.format(key, torch.tensor(res[key][frame_idx]).shape))
         res[key] = torch.tensor(res[key][frame_idx])[None].float().cuda()
     # print('raw shape: {}'.format(res['normed_mesh'].shape))
-    if 'audio' in res:
-        res['value'] = res['audio']
-    else:
-        res['value'] = res['normed_mesh'][:, roi, :2]
+    res['value'] = res['normed_mesh'][:, roi, :2]
     return res
 
 def load_checkpoints(config_path, checkpoint_path, cpu=False):
@@ -109,6 +106,7 @@ def get_dataset(path):
 
     mesh_dict = 'mesh_dict'
     normed_mesh_dict = 'mesh_dict_normalized'
+    lip_dict = 'lip_dict_normalized'
     driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
     driving_normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
     driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[idx]))) for idx in frame_idx]
@@ -117,6 +115,7 @@ def get_dataset(path):
     driving_R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
     driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
     driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
+    driving_lip_array = [np.array(torch.load(os.path.join(path, lip_dict, frames[idx].replace('.png', '.pt'))) for idx in frame_idx]
 
     video_array = np.array(video_array, dtype='float32')
     mesh_array = np.array(mesh_array, dtype='float32') / 128 - 1
@@ -138,6 +137,7 @@ def get_dataset(path):
     driving_c_array = np.array(driving_c_array, dtype='float32') * 128
     driving_t_array = np.array(driving_t_array, dtype='float32')
     driving_t_array = driving_t_array + np.matmul(driving_R_array, (driving_c_array[:, None, None] * np.ones_like(driving_t_array)))
+    driving_lip_array = np.array(driving_lip_array, dtype='float32') / 128 - 1
 
 
     video = video_array
@@ -145,7 +145,7 @@ def get_dataset(path):
     out['mesh'] = {'mesh': mesh_array, 'normed_mesh': normed_mesh_array, 'R': R_array, 't': t_array, 'c': c_array, 'normed_z': z_array}
     out['driving_video'] = driving_video_array.transpose((3, 0, 1, 2))
     out['driving_mesh_img'] = driving_mesh_img_array.transpose((3, 0, 1, 2))
-    out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array, 'audio': audio_array}
+    out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array, 'audio': audio_array, 'lip': driving_lip_array}
     out['driving_name'] = video_name
     out['source_name'] = video_name
     return out
@@ -173,9 +173,13 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, drivi
                 # kp_source['value'] = kp_source['value'].cuda()
 
             out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_frame, driving_image=driving_frame, pool=pool)
-            searched_mesh.append(out['searched_mesh'])
             normed_mesh.append(kp_driving['normed_mesh'])
 
+            driving_mesh_pos = kp_driving['mesh'].cuda()[:, :, None, :2] # B x K x 1 x 2
+            driving_mesh_normalized_pos = kp_driving['normed_mesh'].cuda()
+            motion = F.grid_sample(deformation.permute(0, 3, 1, 2), driving_mesh_pos).squeeze(3).permute(0, 2, 1)   # B x K x 2
+            motion = torch.cat([motion, driving_mesh_normalized_pos[:, :, [2]]], dim=2) # B x K x 3
+            searched_mesh.append(motion)
             filename = '{:05d}.pt'.format(frame_idx + 1)
             R = kp_driving['R'][0].cuda()
             RT = R.transpose(0, 1)
@@ -243,7 +247,7 @@ if __name__ == "__main__":
     fps = 25
 
     generator = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, cpu=opt.cpu)
-    generator.module.dense_motion_network.prior_from_audio = True
+    generator.module.dense_motion_network.prior_from_audio = False
     generator.module.dense_motion_network.T = opt.T
     dataset = get_dataset(opt.vid_dir)
     pca_pool = torch.load(os.path.join(opt.vid_dir, 'mesh_pca.pt'))

@@ -70,7 +70,10 @@ class MeshOcclusionAwareGenerator(nn.Module):
             output_dict['deformation'] = dense_motion['deformation']
             if 'searched_mesh' in dense_motion:
                 output_dict['searched_mesh'] = dense_motion['searched_mesh']
-            
+            if 'pca_coef' in dense_motion:
+                output_dict['pca_coef'] = dense_motion['pca_coef']
+            if 'pca_coef_GT' in dense_motion:
+                output_dict['pca_coef_GT'] = dense_motion['pca_coef_GT']
             if 'occlusion_map' in dense_motion:
                 occlusion_map = dense_motion['occlusion_map']
                 output_dict['occlusion_map'] = occlusion_map

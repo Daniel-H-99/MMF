@@ -2,6 +2,7 @@ from torch import nn
 import torch
 import torch.nn.functional as F
 from modules.util import AntiAliasInterpolation2d, make_coordinate_grid
+from modules.discriminator import LipDiscriminator
 from torchvision import models
 import numpy as np
 from torch.autograd import grad
@@ -137,6 +138,18 @@ class MeshGeneratorFullModel(torch.nn.Module):
         self.scales = train_params['scales']
         self.disc_scales = self.discriminator.scales
         self.pyramid = ImagePyramide(self.scales, generator.num_channels + self.train_params['use_mesh'])
+        if 'lipdiscriminator' in self.train_params:
+            print('loading LipDiscriminator...')
+            lipdisc = LipDiscriminator(**self.train_params['lipdiscriminator']['config'])
+            path = self.train_params['lipdiscriminator']['path']
+            lipdisc.load_state_dict(torch.load(path))
+            lipdisc.cuda()
+            for p in lipdisc.parameters():
+                p.requires_grad = False
+            lipdisc.eval()
+            torch.backends.cudnn.enabled=False
+            self.lipdisc = lipdisc
+            print('LipDiscriminator loaded')
         if torch.cuda.is_available():
             self.pyramid = self.pyramid.cuda()
 
@@ -157,7 +170,7 @@ class MeshGeneratorFullModel(torch.nn.Module):
         kp_source = self.preprocess_mesh(x['source_mesh'])
         kp_driving = self.preprocess_mesh(x['driving_mesh'])
 
-        generated = self.generator(x['source'], kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=x['driving_mesh_image'], driving_image=x['driving'], pool=x['pool'])
+        generated = self.generator(x['source'], kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=x['driving_mesh_image'], driving_image=x['driving'], pool=(x['pool'][0][0], x['pool'][1][0], x['pool'][2][0]))
         generated.update({'kp_source': kp_source, 'kp_driving': kp_driving})
 
         loss_values = {}
@@ -196,6 +209,26 @@ class MeshGeneratorFullModel(torch.nn.Module):
                         value = torch.abs(a - b).mean()
                         value_total += self.loss_weights['feature_matching'][i] * value
                     loss_values['feature_matching'] = value_total
+
+        if self.loss_weights['pca'] != 0:
+            pca_coef_GT = generated['pca_coef_GT'] # B x coef_dim
+            pca_coef = generated['pca_coef'] # B x coef_dim
+            pca_loss = F.l1_loss(pca_coef, pca_coef_GT)
+            loss_values['pca'] = self.loss_weights['pca'] * pca_loss
+
+        if self.loss_weights['lipdisc'] != 0:
+            pca_chunk = generated['pca_coef'] # B x coef_dim
+            bs, coef_dim = pca_chunk.shape
+            pca_chunk = pca_chunk.view(bs // 5, 5, coef_dim)    # B // 5 x 5 x coef_dim
+            audio = kp_driving['audio']
+            bs, C, H, W = audio.shape
+            audio = audio.view(bs // 5, 5, C, H, W)[:, 2] # B // 5 x C x H x W
+            label = torch.ones(bs // 5).long().cuda()
+            # print('lipdisc input shape - {} {} {}'.format(audio.shape, pca_chunk.shape, label.shape))
+            lip_loss = self.lipdisc(audio, pca_chunk, label)
+            # print('lipdisc loss shape: {}'.format(lip_loss.shape))
+            lip_loss = lip_loss.mean()
+            loss_values['lipdisc'] = self.loss_weights['lipdisc'] * lip_loss
 
         # calc landmark motion error
         if self.loss_weights['motion'] != 0:

@@ -246,7 +246,8 @@ if __name__ == "__main__":
     generator.module.dense_motion_network.prior_from_audio = True
     generator.module.dense_motion_network.T = opt.T
     dataset = get_dataset(opt.vid_dir)
-    pool = (torch.load(os.path.join(opt.vid_dir, 'key_pool.pt')).cuda(), torch.load(os.path.join(opt.vid_dir, 'mesh_pool.pt')).cuda())
+    pca_pool = torch.load(os.path.join(opt.vid_dir, 'mesh_pca.pt'))
+    pool = (pca_pool[0].cuda(), torch.load(os.path.join(opt.vid_dir, 'mesh_pool.pt')).cuda(), pca_pool[2].cuda())
     searched_mesh, normed_mesh = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu, pool=pool)
     searched_mesh = torch.cat(searched_mesh, dim=0)
     normed_mesh = torch.cat(normed_mesh, dim=0)

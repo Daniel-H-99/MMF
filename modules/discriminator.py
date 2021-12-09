@@ -50,23 +50,24 @@ class Encoder(nn.Module):
         return out
     
 class PriorEncoder(nn.Module):
-    def __init__(self, prior_dim=20, hidden_dim=64, num_layers=2):
+    def __init__(self, prior_dim=20, hidden_dim=64, embedding_dim=64, num_layers=2):
         super(PriorEncoder, self).__init__()
         self.prior_dim = prior_dim
-        self.lstm = nn.LSTM(prior_dim, hidden_dim, 2)
-        self.fc = nn.Linear(hidden_dim, hidden_dim)
+        self.lstm = nn.LSTM(prior_dim, hidden_dim, 2, dropout=0.2)
+        self.fc = nn.Linear(5 * hidden_dim, embedding_dim)
     def forward(self, x):
         # x: B x T x prior_dim
-        out = self.lstm(x)[-1] # B x hidden_dim
+        out = self.lstm(x)[0].flatten(start_dim=-2) # B x hidden_dim
         out = self.fc(nn.ReLU()(out))   # B x hidden_dim
         return out
 
 class LipDiscriminator(nn.Module):
-    def __init__(self, embedding_dim=20):
+    def __init__(self, prior_dim=20, embedding_dim=64,):
         super(LipDiscriminator, self).__init__()
-        self.audio_encoder = Encoder()
-        self.prior_encoder = PriorEncoder()
-        self.loss_fn = nn.CosineEmbeddingLoss()
+        self.audio_encoder = Encoder(output_dim=embedding_dim)
+        self.prior_encoder = PriorEncoder(prior_dim=prior_dim, embedding_dim=embedding_dim)
+        self.loss_fn = nn.CosineEmbeddingLoss(reduction='none')
+
     def forward(self, audio, prior, label):
         # audio: B x :
         # prior: B x T x prior_dim
@@ -75,7 +76,7 @@ class LipDiscriminator(nn.Module):
         prior_embedding = self.prior_encoder(prior) # B x hidden_dim
         loss = self.loss_fn(audio_embedding, prior_embedding, label)
         return loss
-        
+
 class DownBlock2d(nn.Module):
     """
     Simple block for processing video (encoder).

@@ -49,7 +49,9 @@ def load_checkpoints(config_path, checkpoint_path, cpu=False):
     else:
         checkpoint = torch.load(checkpoint_path)
  
-    generator.load_state_dict(checkpoint['generator'])
+    d = generator.state_dict()
+    d.update(checkpoint['generator'])
+    generator.load_state_dict(d)
     
     if not cpu:
         generator = DataParallelWithCallback(generator)

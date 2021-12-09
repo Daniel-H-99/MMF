@@ -88,8 +88,10 @@ class MeshFramesDataset(Dataset):
             self.transform = None
         print('Dataset size: {}'.format(self.__len__()))
 
-        self.key_pool = torch.load(os.path.join(self.root_dir, self.videos[0], 'key_pool.pt')) # P0 x motion_dim
+        pca_pool = torch.load(os.path.join(self.root_dir, self.videos[0], 'mesh_pca.pt'))
+        self.key_pool = pca_pool[0] # P0 x motion_dim
         self.mesh_pool = torch.load(os.path.join(self.root_dir, self.videos[0], 'mesh_pool.pt')) # P0 x mesh_dim
+        self.pca_V_pool = pca_pool[2]   # N * 3 x pca_dim
         audio_pool = []
         name = self.videos[0]
         path = os.path.join(self.root_dir, name)
@@ -316,7 +318,7 @@ class MeshFramesDataset(Dataset):
 
     def get_pool(self, P=1000):
         index = torch.randint(0, len(self.key_pool), (P,))
-        return self.key_pool[index], self.mesh_pool[index] # P x motion
+        return self.key_pool[index], self.mesh_pool[index], self.pca_V_pool # P x motion
 
 class FramesDataset(Dataset):
     """

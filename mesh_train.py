@@ -6,7 +6,6 @@ from torch.utils.data import DataLoader
 
 from logger import Logger
 from modules.model import MeshGeneratorFullModel, MeshDiscriminatorFullModel
-
 from torch.optim.lr_scheduler import MultiStepLR
 
 from sync_batchnorm import DataParallelWithCallback
@@ -55,6 +54,7 @@ def train(config, generator, discriminator, checkpoint, log_dir, dataset, device
         for _ in trange(0, 200):
             for step, x in tqdm(enumerate(dataloader)):
                 pool = dataloader.dataset.get_pool(train_params['pool_size'])
+                pool = (pool[0].unsqueeze(0).repeat(3, 1, 1), pool[1].unsqueeze(0).repeat(3, 1, 1, 1), pool[2].unsqueeze(0).repeat(3, 1, 1))
                 x['pool'] = pool
                 losses_generator, generated = generator_full(x)
 

@@ -6,3 +6,5 @@ log/
 face-alignment/
 *.png
 *.wav
+vocoder/
+expert_ckpt/

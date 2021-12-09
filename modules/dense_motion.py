@@ -156,16 +156,17 @@ class MeshDenseMotionNetwork(nn.Module):
 
     def search_from_pool(self, audio_prior, pool):
         # audio_prior: B x prior_dim
-        key_pool, mesh_pool = pool # P x prior_dim, P x N x 3
+        # print('audio prior shape: {}'.format(audio_prior.shape))
+        key_pool, mesh_pool = pool[0], pool[1] # P x prior_dim, P x N x 3
         weights = audio_prior.unsqueeze(1) - key_pool.unsqueeze(0)  # B x P x prior_dim
         weights = weights ** 2  # B x P x prior_dim
         weights = weights.sum(dim=2)    # B x P
         # best choice
-        best_index = weights.argmin(dim=1) # B
-        result = mesh_pool[best_index] # B x N x 3
+        # best_index = weights.argmin(dim=1) # B
+        # result = mesh_pool[best_index] # B x N x 3
         # weighted sum
-        # weights = nn.Softmax(dim=1)(-weights / self.T) # B x P
-        # result = torch.einsum('bp,pni->bni', weights, mesh_pool) # B x N x 3
+        weights = nn.Softmax(dim=1)(-weights / self.T) # B x P
+        result = torch.einsum('bp,pni->bni', weights, mesh_pool) # B x N x 3
         return result
 
     def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None, pool=None):
@@ -178,10 +179,20 @@ class MeshDenseMotionNetwork(nn.Module):
         # print('kp value shape: {}'.format(kp_driving['value'].flatten(start_dim=-2).shape))
         
         if self.prior_from_audio:
-            prior = self.audio_prior(kp_driving['value'])
-            searched_mesh = self.search_from_pool(prior, pool).detach()
+            V = pool[2] # N * 3 x pca_dim
+            prior = self.audio_prior(kp_driving['value'])   
+            searched_mesh_roi = torch.matmul(prior, V.t()).view(bs, -1, 3) # B x N x 3
+            searched_mesh = torch.tensor(kp_source['normed_mesh'])
+            searched_mesh[:, self.roi] = searched_mesh_roi
+            # searched_mesh = self.search_from_pool(prior, pool).detach()
+            # print('searched_mesh shape: {}'.format(searched_mesh.shape))
+            kp_driving['value'] = self.motion_prior(searched_mesh[:, self.roi, :2].flatten(start_dim=-2)).view(bs, -1, 2)
             out_dict['searched_mesh'] = searched_mesh # B x N x 3
-            kp_driving['value'] = prior.view(bs, -1, 2)
+            out_dict['pca_coef'] = prior    # B x pca_dim
+            mesh_roi_GT = kp_driving['normed_mesh'][:, self.roi].flatten(start_dim=-2) # B x N * 3
+            pca_coef_GT = torch.matmul(mesh_roi_GT, V)  # B x pca_dim
+            out_dict['pca_coef_GT'] = pca_coef_GT
+
         else:
             kp_driving['value'] = self.motion_prior(kp_driving['value'].flatten(start_dim=-2)).view(bs, -1, 2)
         # kp_source['value'] = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1, 2)

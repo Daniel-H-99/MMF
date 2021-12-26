@@ -1,7 +1,7 @@
 from torch import nn
 import torch
 import torch.nn.functional as F
-from modules.util import AntiAliasInterpolation2d, make_coordinate_grid
+from modules.util import AntiAliasInterpolation2d, make_coordinate_grid, MASK_IDX, LIP_IDX, OVAL_IDX
 from modules.discriminator import LipDiscriminator
 from torchvision import models
 import numpy as np
@@ -137,19 +137,7 @@ class MeshGeneratorFullModel(torch.nn.Module):
         self.train_params = train_params
         self.scales = train_params['scales']
         self.disc_scales = self.discriminator.scales
-        self.pyramid = ImagePyramide(self.scales, generator.num_channels + self.train_params['use_mesh'])
-        if 'lipdiscriminator' in self.train_params:
-            print('loading LipDiscriminator...')
-            lipdisc = LipDiscriminator(**self.train_params['lipdiscriminator']['config'])
-            path = self.train_params['lipdiscriminator']['path']
-            lipdisc.load_state_dict(torch.load(path))
-            lipdisc.cuda()
-            for p in lipdisc.parameters():
-                p.requires_grad = False
-            lipdisc.eval()
-            torch.backends.cudnn.enabled=False
-            self.lipdisc = lipdisc
-            print('LipDiscriminator loaded')
+        self.pyramid = ImagePyramide(self.scales, generator.num_channels + 1)
         if torch.cuda.is_available():
             self.pyramid = self.pyramid.cuda()
 
@@ -170,7 +158,7 @@ class MeshGeneratorFullModel(torch.nn.Module):
         kp_source = self.preprocess_mesh(x['source_mesh'])
         kp_driving = self.preprocess_mesh(x['driving_mesh'])
 
-        generated = self.generator(x['source'], kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=x['driving_mesh_image'], driving_image=x['driving'], pool=(x['pool'][0][0], x['pool'][1][0], x['pool'][2][0]))
+        generated = self.generator(x['source'], kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=x['driving_mesh_image'], driving_image=x['driving'])
         generated.update({'kp_source': kp_source, 'kp_driving': kp_driving})
 
         loss_values = {}
@@ -210,29 +198,10 @@ class MeshGeneratorFullModel(torch.nn.Module):
                         value_total += self.loss_weights['feature_matching'][i] * value
                     loss_values['feature_matching'] = value_total
 
-        if self.loss_weights['pca'] != 0:
-            pca_coef_GT = generated['pca_coef_GT'] # B x coef_dim
-            pca_coef = generated['pca_coef'] # B x coef_dim
-            pca_loss = F.l1_loss(pca_coef, pca_coef_GT)
-            loss_values['pca'] = self.loss_weights['pca'] * pca_loss
-
-        if self.loss_weights['lipdisc'] != 0:
-            pca_chunk = generated['pca_coef'] # B x coef_dim
-            bs, coef_dim = pca_chunk.shape
-            pca_chunk = pca_chunk.view(bs // 5, 5, coef_dim)    # B // 5 x 5 x coef_dim
-            audio = kp_driving['audio']
-            bs, C, H, W = audio.shape
-            audio = audio.view(bs // 5, 5, C, H, W)[:, 2] # B // 5 x C x H x W
-            label = torch.ones(bs // 5).long().cuda()
-            # print('lipdisc input shape - {} {} {}'.format(audio.shape, pca_chunk.shape, label.shape))
-            lip_loss = self.lipdisc(audio, pca_chunk, label)
-            # print('lipdisc loss shape: {}'.format(lip_loss.shape))
-            lip_loss = lip_loss.mean()
-            loss_values['lipdisc'] = self.loss_weights['lipdisc'] * lip_loss
-
         # calc landmark motion error
         if self.loss_weights['motion'] != 0:
-            roi = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
+            roi = LIP_IDX + list(set(MASK_IDX) | set(OVAL_IDX))
+            mask = MASK_IDX
             bg_mask = (x['driving_mesh_image'] == 0)[:, 0] # B x H x W
             deformation = generated['deformation']  # B x H x W x 2 
             driving_mesh = x['driving_mesh']['mesh'].cuda()[:, :, None, :2] # B x K x 1 x 2
@@ -242,26 +211,18 @@ class MeshGeneratorFullModel(torch.nn.Module):
             motion_GT = x['source_mesh']['mesh'].cuda()[:, :, :2].flatten(start_dim=1) # B x K * 2
             motion_roi = F.grid_sample(deformation.permute(0, 3, 1, 2), driving_mesh_roi).squeeze(3).permute(0, 2, 1).flatten(start_dim=1) 
             motion_roi_GT = x['source_mesh']['mesh'].cuda()[:, roi, :2].flatten(start_dim=1) # B x K * 2
-            searched_mesh = generated['searched_mesh'] # B x N x 3
             background_loss = self.loss_weights['background'] * F.l1_loss(generated['mask'][:, 0] * bg_mask, torch.ones_like(bg_mask).float() * bg_mask)
-            motion_loss = self.loss_weights['motion'] * F.mse_loss(motion, motion_GT)
+            motion_loss = self.loss_weights['motion'] * F.mse_loss(motion[:, mask], motion_GT[:, mask])
             motion_roi_loss = self.loss_weights['motion_roi'] * F.l1_loss(motion_roi, motion_roi_GT)
-            searched_mesh_loss = self.loss_weights['motion'] * F.mse_loss(searched_mesh.flatten(start_dim=-2), driving_mesh_normalized.flatten(start_dim=-2))
-            searched_mesh_roi_loss = self.loss_weights['motion_roi'] * F.l1_loss(searched_mesh[:, roi].flatten(start_dim=-2), driving_mesh_normalized[:, roi].flatten(start_dim=-2))
             loss_values['bg'] = background_loss
             loss_values['motion'] = motion_loss
             loss_values['motion_roi'] = motion_roi_loss
-            loss_values['searched_mesh'] = searched_mesh_loss
-            loss_values['searched_mesh_roi'] = searched_mesh_roi_loss
         return loss_values, generated
 
     def preprocess_mesh(self, mesh):
-        roi = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
+        roi = LIP_IDX
         res = mesh
-        if 'audio' in mesh:
-            res['value'] = mesh['audio']
-        else:
-            res['value'] = mesh['normed_mesh'][:, roi, :2]
+        res['value'] = mesh['normed_mesh'][:, roi, :2]
         # res['jacobian'] = (mesh['R'].inverse()[:, :2, :2] / mesh['c'].unsqueeze(1).unsqueeze(2)).unsqueeze(1).repeat(1, res['value'].size(1), 1, 1)
 
         # print("jacobian shape: {}".format(res['jacobian'].shape))
@@ -377,7 +338,7 @@ class MeshDiscriminatorFullModel(torch.nn.Module):
         self.discriminator = discriminator
         self.train_params = train_params
         self.scales = self.discriminator.scales
-        self.pyramid = ImagePyramide(self.scales, generator.num_channels + self.train_params['use_mesh'])
+        self.pyramid = ImagePyramide(self.scales, generator.num_channels + 1)
         if torch.cuda.is_available():
             self.pyramid = self.pyramid.cuda()
 
@@ -413,7 +374,7 @@ class DiscriminatorFullModel(torch.nn.Module):
         self.discriminator = discriminator
         self.train_params = train_params
         self.scales = self.discriminator.scales
-        self.pyramid = ImagePyramide(self.scales, generator.num_channels + discriminator.use_mesh)
+        self.pyramid = ImagePyramide(self.scales, generator.num_channels + 1)
         if torch.cuda.is_available():
             self.pyramid = self.pyramid.cuda()
 

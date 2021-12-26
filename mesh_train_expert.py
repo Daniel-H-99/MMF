@@ -19,7 +19,7 @@ import random
 import pickle as pkl
 import math
 
-os.environ['CUDA_VISIBLE_DEVICES']='3'
+os.environ['CUDA_VISIBLE_DEVICES']='1'
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('--data_dir', type=str, default='../datasets/train_kkj/kkj04.mp4')
 parser.add_argument('--ckpt_dir', type=str, default='expert_ckpt')
@@ -51,8 +51,16 @@ class MeshSyncDataset(Dataset):
     def __getitem__(self, index):
         negative = random.random() >= self.positive_p
         if negative:
-            negative_index = (index + random.choice(list(range(1, self.__len__())))) % self.__len__()
-            return self.audio[index], self.prior[negative_index:negative_index + 5], -1 # :, T x prior_dim
+            r = random.random()
+            if r <= 0.3:
+                negative_index = (index + random.choice(list(range(1, self.__len__())))) % self.__len__()
+                return self.audio[index], self.prior[negative_index:negative_index + 5], -1 # :, T x prior_dim
+            elif r <= 0.6:
+                negative_index = (index + random.choice(list(range(1, self.__len__())))) % self.__len__()
+                return self.audio[index], torch.cat([self.prior[negative_index:negative_index+2], self.prior[index+2:index+5]], dim=0), -1
+            else:
+                negative_index = (index + random.choice(list(range(1, self.__len__())))) % self.__len__()
+                return self.audio[index], torch.cat([self.prior[index:index+2], self.prior[negative_index+2:negative_index+5]], dim=0), -1
         else:
             return self.audio[index], self.prior[index:index + 5], 1
     def update_p(self, p):
@@ -100,8 +108,8 @@ scheduler = MultiStepLR(optimizer, [int(m) for m in args.milestone.split(',')], 
 total_steps = args.steps
 save_freq = args.save_freq
 log_freq = args.log_freq
-ckpt_dir = os.path.join(args.data_dir, args.ckpt_dir)
-log_path = os.path.join(args.data_dir, args.log_pth)
+ckpt_dir = os.path.join(args.ckpt_dir)
+log_path = os.path.join(args.ckpt_dir, args.log_pth)
 os.makedirs(ckpt_dir, exist_ok=True)
 
 with open(log_path, 'w') as f:

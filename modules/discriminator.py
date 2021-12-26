@@ -62,7 +62,7 @@ class PriorEncoder(nn.Module):
         return out
 
 class LipDiscriminator(nn.Module):
-    def __init__(self, prior_dim=20, embedding_dim=64,):
+    def __init__(self, prior_dim=20, embedding_dim=64):
         super(LipDiscriminator, self).__init__()
         self.audio_encoder = Encoder(output_dim=embedding_dim)
         self.prior_encoder = PriorEncoder(prior_dim=prior_dim, embedding_dim=embedding_dim)
@@ -112,13 +112,13 @@ class Discriminator(nn.Module):
     """
 
     def __init__(self, num_channels=3, block_expansion=64, num_blocks=4, max_features=512,
-                 sn=False, use_kp=False, use_mesh=False, num_kp=10, kp_variance=0.01, **kwargs):
+                 sn=False, use_kp=False, num_kp=10, kp_variance=0.01, **kwargs):
         super(Discriminator, self).__init__()
 
         down_blocks = []
         for i in range(num_blocks):
             down_blocks.append(
-                DownBlock2d(num_channels + num_kp * use_kp + use_mesh if i == 0 else min(max_features, block_expansion * (2 ** i)),
+                DownBlock2d(num_channels + num_kp * use_kp + 1 if i == 0 else min(max_features, block_expansion * (2 ** i)),
                             min(max_features, block_expansion * (2 ** (i + 1))),
                             norm=(i != 0), kernel_size=4, pool=(i != num_blocks - 1), sn=sn))
 
@@ -127,7 +127,6 @@ class Discriminator(nn.Module):
         if sn:
             self.conv = nn.utils.spectral_norm(self.conv)
         self.use_kp = use_kp
-        self.use_mesh = use_mesh
         self.kp_variance = kp_variance
 
     def forward(self, x, kp=None):

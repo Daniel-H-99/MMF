@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from sync_batchnorm import DataParallelWithCallback
 
 from modules.generator import MeshOcclusionAwareGenerator
-from modules.util import mesh_tensor_to_landmarkdict, draw_mesh_images, interpolate_zs, mix_mesh_tensor
+from modules.util import mesh_tensor_to_landmarkdict, draw_mesh_images, interpolate_zs, mix_mesh_tensor, LIP_IDX, MASK_IDX, WIDE_MASK_IDX, get_lip_mask
 
 from scipy.spatial import ConvexHull
 import os
@@ -36,7 +36,11 @@ def preprocess_mesh(m, frame_idx):
         # print('{} shape: {}'.format(key, torch.tensor(res[key][frame_idx]).shape))
         res[key] = torch.tensor(res[key][frame_idx])[None].float().cuda()
     # print('raw shape: {}'.format(res['normed_mesh'].shape))
+    if 'normed_lip' in res:
+        res['mesh'][:, roi] = res['normed_lip']
+        res['normed_mesh'][:, roi] = res['normed_lip']
     res['value'] = res['normed_mesh'][:, roi, :2]
+
     return res
 
 def load_checkpoints(config_path, checkpoint_path, cpu=False):
@@ -52,8 +56,9 @@ def load_checkpoints(config_path, checkpoint_path, cpu=False):
         checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
     else:
         checkpoint = torch.load(checkpoint_path)
- 
-    generator.load_state_dict(checkpoint['generator'])
+    d = generator.state_dict()
+    d.update(checkpoint['generator'])
+    generator.load_state_dict(d)
     
     if not cpu:
         generator = DataParallelWithCallback(generator)
@@ -80,9 +85,11 @@ def get_dataset(path):
     audio_pool = np.array(audio_pool).astype(np.float32)
 
     reference_frame_path = os.path.join(path, 'frame_reference.png')
+    reference_mesh_img_path = os.path.join(path, 'mesh_image_reference.png')
     reference_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
     reference_normed_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
     reference_frame = img_as_float32(io.imread(reference_frame_path))
+    reference_mesh_img = img_as_float32(io.imread(reference_mesh_img_path))
     reference_mesh = np.array(list(reference_mesh_dict.values())[:478])
     reference_normed_mesh = np.array(list(reference_normed_mesh_dict.values())[:478])
     reference_R = np.array(reference_mesh_dict['R'])
@@ -90,6 +97,7 @@ def get_dataset(path):
     reference_c = np.array(reference_mesh_dict['c'])
     reference_normed_z = torch.load(os.path.join(path, 'z_reference_normalized.pt'))
     video_array = [reference_frame for idx in frame_idx]
+    mesh_img_array = [reference_mesh_img for idx in frame_idx]
     mesh_array = [reference_mesh for idx in frame_idx]
     normed_mesh_array = [reference_normed_mesh for idx in frame_idx]
     z_array = [reference_normed_z for idx in frame_idx]
@@ -107,6 +115,17 @@ def get_dataset(path):
     mesh_dict = 'mesh_dict'
     normed_mesh_dict = 'mesh_dict_normalized'
     lip_dict = 'lip_dict_normalized'
+    driving_lip_array = [torch.load(os.path.join(path, lip_dict, frames[idx].replace('.png', '.pt'))).cpu().numpy() for idx in frame_idx]
+    lip_mask_array = [get_lip_mask(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))), (256, 256, 3)) for idx in frame_idx]
+    
+    _mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
+    _normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
+    _R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
+    _t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
+    _c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
+    
+    frames = ['00003.png' for _ in range(len(frames))]
+
     driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
     driving_normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
     driving_mesh_img_array = [img_as_float32(io.imread(os.path.join(path, 'mesh_image', frames[idx]))) for idx in frame_idx]
@@ -115,9 +134,10 @@ def get_dataset(path):
     driving_R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
     driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
     driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
-    driving_lip_array = [np.array(torch.load(os.path.join(path, lip_dict, frames[idx].replace('.png', '.pt'))) for idx in frame_idx]
+
 
     video_array = np.array(video_array, dtype='float32')
+    mesh_img_array = np.array(mesh_img_array, dtype='float32')
     mesh_array = np.array(mesh_array, dtype='float32') / 128 - 1
     normed_mesh_array = np.array(normed_mesh_array, dtype='float32') / 128 - 1
     R_array = np.array(R_array, dtype='float32')
@@ -129,7 +149,7 @@ def get_dataset(path):
 
 
     driving_video_array = np.array(driving_video_array, dtype='float32')
-    driving_mesh_img_array = np.array(driving_mesh_img_array, dtype='float32')
+    driving_mesh_img_array = np.array(driving_mesh_img_array, dtype='float32') * np.array(lip_mask_array, dtype='float32')
     driving_mesh_array = np.array(driving_mesh_array, dtype='float32') / 128 - 1
     driving_normed_mesh_array = np.array(driving_normed_mesh_array, dtype='float32') / 128 - 1
     driving_z_array = torch.stack(driving_z_array, dim=0).float() / 128 - 1
@@ -140,17 +160,24 @@ def get_dataset(path):
     driving_lip_array = np.array(driving_lip_array, dtype='float32') / 128 - 1
 
 
+    _mesh_array = np.array(_mesh_array, dtype='float32') / 128 - 1
+    _normed_mesh_array = np.array(_normed_mesh_array, dtype='float32') / 128 - 1
+    _R_array = np.array(_R_array, dtype='float32')
+    _c_array = np.array(_c_array, dtype='float32') * 128
+    _t_array = np.array(_t_array, dtype='float32')
+    _t_array = _t_array + np.matmul(_R_array, (_c_array[:, None, None] * np.ones_like(_t_array)))
+
     video = video_array
     out['video'] = video.transpose((3, 0, 1, 2))
-    out['mesh'] = {'mesh': mesh_array, 'normed_mesh': normed_mesh_array, 'R': R_array, 't': t_array, 'c': c_array, 'normed_z': z_array}
+    out['mesh'] = {'mesh': mesh_array, 'normed_mesh': normed_mesh_array, 'R': R_array, 't': t_array, 'c': c_array, 'normed_z': z_array, 'normed_lip': driving_lip_array}
     out['driving_video'] = driving_video_array.transpose((3, 0, 1, 2))
     out['driving_mesh_img'] = driving_mesh_img_array.transpose((3, 0, 1, 2))
-    out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array, 'audio': audio_array, 'lip': driving_lip_array}
+    out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array, 'driving_mesh': _mesh_array, 'driving_normed_mesh': _normed_mesh_array, 'driving_R': _R_array, 'driving_t': _t_array, 'driving_c': _c_array, 'audio': audio_array}
     out['driving_name'] = video_name
     out['source_name'] = video_name
     return out
 
-def make_animation(source_video, driving_video, source_mesh, driving_mesh, driving_mesh_img, generator, relative=True, adapt_movement_scale=True, cpu=False, pool=None):
+def make_animation(source_video, driving_video, source_mesh, driving_mesh, driving_mesh_img, generator, relative=True, adapt_movement_scale=True, cpu=False):
     with torch.no_grad():
         source = torch.tensor(np.array(source_video)[np.newaxis].astype(np.float32))
         driving = torch.tensor(np.array(driving_video)[np.newaxis].astype(np.float32))
@@ -172,32 +199,38 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, drivi
                 # kp_driving['value'] = kp_driving['value'].cuda()
                 # kp_source['value'] = kp_source['value'].cuda()
 
-            out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_frame, driving_image=driving_frame, pool=pool)
+            out = generator(source_frame, kp_source=kp_source, kp_driving=kp_driving, driving_mesh_image=driving_mesh_frame, driving_image=driving_frame)
             normed_mesh.append(kp_driving['normed_mesh'])
 
-            driving_mesh_pos = kp_driving['mesh'].cuda()[:, :, None, :2] # B x K x 1 x 2
-            driving_mesh_normalized_pos = kp_driving['normed_mesh'].cuda()
-            motion = F.grid_sample(deformation.permute(0, 3, 1, 2), driving_mesh_pos).squeeze(3).permute(0, 2, 1)   # B x K x 2
-            motion = torch.cat([motion, driving_mesh_normalized_pos[:, :, [2]]], dim=2) # B x K x 3
+            driving_mesh_pos = kp_driving['mesh'].cuda()[:, MASK_IDX, None, :2] # B x K x 1 x 2
+            driving_mesh_normalized_pos = kp_driving['normed_mesh'].cuda()[:, MASK_IDX]
+            motion = kp_driving['driving_normed_mesh'].cuda()
+            motion[:, MASK_IDX, :2] = F.grid_sample(out['deformation'].permute(0, 3, 1, 2), driving_mesh_pos).squeeze(3).permute(0, 2, 1)   # B x K x 2
+            # motion[LIP_IDX] = kp_driving['normed_lip']
             searched_mesh.append(motion)
             filename = '{:05d}.pt'.format(frame_idx + 1)
-            R = kp_driving['R'][0].cuda()
+            R = kp_driving['driving_R'][0].cuda()
             RT = R.transpose(0, 1)
-            t = kp_driving['t'][0].cuda()
-            c = kp_driving['c'][0].cuda()
+            t = kp_driving['driving_t'][0].cuda()
+            c = kp_driving['driving_c'][0].cuda()
 
             t -= torch.matmul(R, (c * torch.ones_like(t)))
             c /= 128
             R = R
 
-            normalized_base = 128 * (kp_driving['normed_mesh'][0] + 1)
-            base = 128 * (kp_driving['mesh'][0] + 1)
-            geometry = 128 * (out['searched_mesh'].view(-1, 3) + 1)
+            # normalized_base = 128 * (kp_driving['normed_mesh'][0] + 1)
+            # base = 128 * (kp_driving['mesh'][0] + 1)
+            geometry = 128 * (motion.view(-1, 3) + 1)
             normalised_geometry = geometry.clone().detach().cpu()
             # normalised_geometry = mix_mesh_tensor(normalised_geometry, normalized_base.cpu())
             normalised_landmark_dict = mesh_tensor_to_landmarkdict(normalised_geometry)
             
             geometry = (torch.matmul(RT, (geometry.transpose(0, 1) - t)) / c).transpose(0, 1).cpu().detach()
+            
+            # mix with original geometry
+            _geometry = kp_driving['driving_mesh'][0].cpu()
+            _geometry[MASK_IDX] = geometry[MASK_IDX]
+            geomtery = _geometry
             # geometry = mix_mesh_tensor(geometry, base.cpu())
             landmark_dict = mesh_tensor_to_landmarkdict(geometry)
             landmark_dict.update({'R': R.cpu().numpy(), 't': t.cpu().numpy(), 'c': c.cpu().numpy()})
@@ -252,7 +285,7 @@ if __name__ == "__main__":
     dataset = get_dataset(opt.vid_dir)
     pca_pool = torch.load(os.path.join(opt.vid_dir, 'mesh_pca.pt'))
     pool = (pca_pool[0].cuda(), torch.load(os.path.join(opt.vid_dir, 'mesh_pool.pt')).cuda(), pca_pool[2].cuda())
-    searched_mesh, normed_mesh = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu, pool=pool)
+    searched_mesh, normed_mesh = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
     searched_mesh = torch.cat(searched_mesh, dim=0)
     normed_mesh = torch.cat(normed_mesh, dim=0)
     eval_loss = 100 * F.l1_loss(searched_mesh.flatten(start_dim=-2), normed_mesh.flatten(start_dim=-2))

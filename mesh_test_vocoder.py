@@ -96,13 +96,14 @@ searched_mesh_dir = os.path.join(args.data_dir, 'mesh_dict_searched')
 searched_mesh_image_dir = os.path.join(args.data_dir, 'mesh_image_searched')
 z_dir = os.path.join(args.data_dir, 'z_searched')
 driving_mesh_dir = os.path.join(args.data_dir, 'mesh_dict')
+lip_dict_dir = os.path.join(args.data_dir, 'lip_dict_normalized')
 os.makedirs(args.result_dir, exist_ok=True)
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(normed_searched_mesh_dir, exist_ok=True)
 os.makedirs(normed_searched_mesh_image_dir, exist_ok=True)
 os.makedirs(searched_mesh_dir, exist_ok=True)
 os.makedirs(searched_mesh_image_dir, exist_ok=True)
-
+os.makedirs(lip_dict_dir, exist_ok=True)
 reference_mesh = torch.load(os.path.join(args.data_dir, 'mesh_dict_reference.pt'))
 
 pca_pool = torch.load(os.path.join(args.pool_dir, 'mesh_pca.pt'))
@@ -250,9 +251,9 @@ with torch.no_grad():
         # print('input shape: {} {}'.format(audio.shape, prior.shape))
         pred = model(audio) # B x pca_dim
         # print('output shape: {}'.format(pred.shape))
-        loss = loss_fn(pred, prior) # 1
+        loss = 0.2 * loss_fn(pred, prior) # 1
         eval_loss += loss.item()
-        num_items = len(audio)
+        num_items = len(audio) // 5
         audio = audio.view(chunked_audio_shape)[:, 2] # B x :
         pred = pred.view(chunked_prior_shape)   # B x 5 x 
         prior = prior.view(chunked_prior_shape)
@@ -266,12 +267,14 @@ with torch.no_grad():
         item_size += num_items
         key = '{:05d}'.format(step + 1)
         save_segmap(pred[:, 2], key + '.png')
-        driving_mesh = torch.load(os.path.join(driving_mesh_dir, key + '.pt'))
-        R, t, c = torch.tensor(driving_mesh['R']).float().cuda(), torch.tensor(driving_mesh['t']).float().cuda(), torch.tensor(driving_mesh['c']).float().cuda()
+        pred_lip = recon_lip(pred[:, 2])    # B x Lip x 3
+        torch.save(pred_lip[0], os.path.join(args.data_dir, 'lip_dict_normalized', key + '.pt'))
+        # driving_mesh = torch.load(os.path.join(driving_mesh_dir, key + '.pt'))
+        # R, t, c = torch.tensor(driving_mesh['R']).float().cuda(), torch.tensor(driving_mesh['t']).float().cuda(), torch.tensor(driving_mesh['c']).float().cuda()
         # query = pred[:, 2]
         # query = audio
         # query = lipdisc.audio_encoder(audio)
-        query = recon_lip(prior[:, 2]) / 128 - 1
+        # query = recon_lip(prior[:, 2]) / 128 - 1
         # # query -= query.mean(dim=1, keepdim=True)
         # query = query.flatten(-2)
         # print('key_pool shape: {}'.format(key_pool.shape))
@@ -298,20 +301,20 @@ with torch.no_grad():
         # prior_chain.append(search_prior)
         # normed_searched_mesh = 128 * (search_result + 1)[0]  # N x 3
         # print('search result: {}'.format(search_result.shape))
-        torch.save(mesh_tensor_to_landmarkdict(normed_searched_mesh), os.path.join(normed_searched_mesh_dir, key + '.pt'))
-        searched_mesh = torch.matmul(R.t(), normed_searched_mesh.t() - t).t() / c
-        searched_mesh_dict = mesh_tensor_to_landmarkdict(searched_mesh)
-        searched_mesh_dict.update({'R': R.cpu().numpy(), 't': t.cpu().numpy(), 'c': c.cpu().numpy()})
-        torch.save(searched_mesh_dict, os.path.join(searched_mesh_dir, key + '.pt'))
+        # torch.save(mesh_tensor_to_landmarkdict(normed_searched_mesh), os.path.join(normed_searched_mesh_dir, key + '.pt'))
+        # searched_mesh = torch.matmul(R.t(), normed_searched_mesh.t() - t).t() / c
+        # searched_mesh_dict = mesh_tensor_to_landmarkdict(searched_mesh)
+        # searched_mesh_dict.update({'R': R.cpu().numpy(), 't': t.cpu().numpy(), 'c': c.cpu().numpy()})
+        # torch.save(searched_mesh_dict, os.path.join(searched_mesh_dir, key + '.pt'))
 
 eval_loss = eval_loss / item_size
 eval_lipdisc_loss = eval_lipdisc_loss / item_size
 print('(Test) test_loss: {}, lipdisc_loss: {}'.format(eval_loss, eval_lipdisc_loss))
 # train_dataloader.dataset.update_p(positive_p)
 # eval_dataloader.dataset.update_p(positive_p)
-draw_mesh_images(os.path.join(normed_searched_mesh_dir), os.path.join(normed_searched_mesh_image_dir), 256, 256)
-draw_mesh_images(os.path.join(searched_mesh_dir), os.path.join(searched_mesh_image_dir), 256, 256)
-interpolate_zs(searched_mesh_dir, z_dir, 256, 256)
+# draw_mesh_images(os.path.join(normed_searched_mesh_dir), os.path.join(normed_searched_mesh_image_dir), 256, 256)
+# draw_mesh_images(os.path.join(searched_mesh_dir), os.path.join(searched_mesh_image_dir), 256, 256)
+# interpolate_zs(searched_mesh_dir, z_dir, 256, 256)
 
 
     

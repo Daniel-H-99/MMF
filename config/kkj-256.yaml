@@ -38,38 +38,28 @@ model_params:
       max_features: 1024
       num_blocks: 5
       scale_factor: 1
-      use_mesh: True
-      prior_from_audio: True
-      T: 0.1
   discriminator_params:
     scales: [1]
     block_expansion: 32
     max_features: 512
     num_blocks: 4
     sn: True
-    use_mesh: True
 train_params:
   num_epochs: 200
   num_repeats: 1
   log_freq: 100
   pool_size: 27999
-  epoch_milestones: [100, 200, 300]
-  lr_generator: 2.0e-2
+  epoch_milestones: [60, 90]
+  lr_generator: 2.0e-4
   lr_discriminator: 2.0e-4
   lr_kp_detector: 2.0e-4
   batch_size: 15
   scales: [1, 0.5, 0.25, 0.125]
   checkpoint_freq: 10
-  use_mesh: True
   transform_params:
     sigma_affine: 0.05
     sigma_tps: 0.005
     points_tps: 5
-  lipdiscriminator:
-    config:
-      prior_dim: 20
-      embedding_dim: 256
-    path: 'expert_ckpt/e256/best.pt'
   loss_weights:
     generator_gan: 0
     discriminator_gan: 1
@@ -77,11 +67,10 @@ train_params:
     perceptual: [10, 10, 10, 10, 10]
     equivariance_value: 10
     equivariance_jacobian: 10
-    background: 100
+    background: 0
     motion: 100
     motion_roi: 100
-    pca: 100
-    lipdisc: 100
+
 reconstruction_params:
   num_videos: 1000
   format: '.mp4'

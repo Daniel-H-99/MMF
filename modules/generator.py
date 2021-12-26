@@ -55,25 +55,20 @@ class MeshOcclusionAwareGenerator(nn.Module):
             deformation = deformation.permute(0, 2, 3, 1)
         return F.grid_sample(inp, deformation)
 
-    def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None, driving_image=None, pool=None):
+    def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None, driving_image=None):
         # Encoding (downsampling) part
         # Transforming feature representation according to deformation and occlusion
         out = source_image
         output_dict = {}
         if self.dense_motion_network is not None:
             dense_motion = self.dense_motion_network(source_image=source_image, kp_driving=kp_driving,
-                                                     kp_source=kp_source, driving_mesh_image=driving_mesh_image, pool=pool)
+                                                     kp_source=kp_source, driving_mesh_image=driving_mesh_image)
             output_dict['kp_source'] = kp_source
             output_dict['kp_driving'] = kp_driving
             output_dict['mask'] = dense_motion['mask']  # B x K x H x W
             # output_dict['sparse_deformed'] = dense_motion['sparse_deformed']    # B  K x C x H x W
             output_dict['deformation'] = dense_motion['deformation']
-            if 'searched_mesh' in dense_motion:
-                output_dict['searched_mesh'] = dense_motion['searched_mesh']
-            if 'pca_coef' in dense_motion:
-                output_dict['pca_coef'] = dense_motion['pca_coef']
-            if 'pca_coef_GT' in dense_motion:
-                output_dict['pca_coef_GT'] = dense_motion['pca_coef_GT']
+            
             if 'occlusion_map' in dense_motion:
                 occlusion_map = dense_motion['occlusion_map']
                 output_dict['occlusion_map'] = occlusion_map
@@ -88,9 +83,9 @@ class MeshOcclusionAwareGenerator(nn.Module):
                 out = out * occlusion_map
 
             if driving_image is not None:
-                driving_mask = output_dict['mask'][:, [0]].detach()
-                driving_mask *= (driving_mesh_image[:, [0]] == 0)
-                # driving_mask = (driving_mesh_image[:, [0]] == 0).byte()
+                # driving_mask = output_dict['mask'][:, [0]].detach()
+                # driving_mask *= (driving_mesh_image[:, [0]] == 0)
+                driving_mask = (driving_mesh_image[:, [0]] == 0).byte()
                 out = out * (1 - driving_mask) + driving_image * driving_mask
 
             output_dict["deformed"] = out

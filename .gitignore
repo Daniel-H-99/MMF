@@ -8,3 +8,4 @@ face-alignment/
 *.wav
 vocoder/
 expert_ckpt/
+expert*

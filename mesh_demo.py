@@ -11,9 +11,9 @@ from skimage.transform import resize
 from skimage import img_as_ubyte, img_as_float32, io
 import torch
 from sync_batchnorm import DataParallelWithCallback
+from modules.util import mesh_tensor_to_landmarkdict, draw_mesh_images, interpolate_zs, mix_mesh_tensor, LIP_IDX, WIDE_MASK_IDX, get_lip_mask
 
 from modules.generator import MeshOcclusionAwareGenerator
-
 from scipy.spatial import ConvexHull
 import os
 import ffmpeg
@@ -96,6 +96,7 @@ def get_dataset(path):
         driving_R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
         driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
         driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
+        lip_mask_array = [get_lip_mask(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))), (256, 256, 3)) for idx in frame_idx]
 
     else:
         mesh_dict = 'mesh_dict_searched'
@@ -108,6 +109,7 @@ def get_dataset(path):
         driving_R_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['R']) for idx in frame_idx]
         driving_t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
         driving_c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
+        lip_mask_array = [get_lip_mask(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))), (256, 256, 3)) for idx in frame_idx]
         
     video_array = np.array(video_array, dtype='float32')
     mesh_array = np.array(mesh_array, dtype='float32') / 128 - 1
@@ -121,7 +123,7 @@ def get_dataset(path):
 
 
     driving_video_array = np.array(driving_video_array, dtype='float32')
-    driving_mesh_img_array = np.array(driving_mesh_img_array, dtype='float32')
+    driving_mesh_img_array = np.array(driving_mesh_img_array, dtype='float32') * np.array(lip_mask_array, dtype='float32')
     driving_mesh_array = np.array(driving_mesh_array, dtype='float32') / 128 - 1
     driving_normed_mesh_array = np.array(driving_normed_mesh_array, dtype='float32') / 128 - 1
     driving_z_array = torch.stack(driving_z_array, dim=0).float() / 128 - 1
@@ -130,6 +132,15 @@ def get_dataset(path):
     driving_t_array = np.array(driving_t_array, dtype='float32')
     driving_t_array = driving_t_array + np.matmul(driving_R_array, (driving_c_array[:, None, None] * np.ones_like(driving_t_array)))
 
+
+    # video = video_array
+    # out['video'] = video.transpose((3, 0, 1, 2))
+    # out['mesh'] = {'mesh': mesh_array, 'normed_mesh': normed_mesh_array, 'R': R_array, 't': t_array, 'c': c_array, 'normed_z': z_array}
+    # out['driving_video'] = driving_video_array.transpose((3, 0, 1, 2))
+    # out['driving_mesh_img'] = driving_mesh_img_array.transpose((3, 0, 1, 2))
+    # out['driving_mesh'] = {'mesh': driving_mesh_array, 'normed_mesh': driving_normed_mesh_array, 'R': driving_R_array, 't': driving_t_array, 'c': driving_c_array, 'z': driving_z_array}
+    # out['driving_name'] = video_name
+    # out['source_name'] = video_name
 
     video = video_array
     out['video'] = video.transpose((3, 0, 1, 2))

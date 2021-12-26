@@ -59,9 +59,9 @@ class MeshDenseMotionNetwork(nn.Module):
     """
 
     def __init__(self, block_expansion, num_blocks, max_features, num_kp, num_channels, estimate_occlusion_map=False,
-                 scale_factor=1, kp_variance=0.01, use_mesh=False, prior_from_audio=False, T=1.0):
+                 scale_factor=1, kp_variance=0.01):
         super(MeshDenseMotionNetwork, self).__init__()
-        self.hourglass = Hourglass(block_expansion=block_expansion, in_features=use_mesh,
+        self.hourglass = Hourglass(block_expansion=block_expansion, in_features=1,
                                    max_features=max_features, num_blocks=num_blocks)
 
         self.mask = nn.Conv2d(self.hourglass.out_filters, num_kp + 1, kernel_size=(7, 7), padding=(3, 3))
@@ -77,11 +77,6 @@ class MeshDenseMotionNetwork(nn.Module):
 
         self.motion_prior = nn.Linear(38 * 2, num_kp * 2)
 
-        self.prior_from_audio = prior_from_audio
-        if self.prior_from_audio:
-            self.audio_prior = Encoder(output_dim=num_kp * 2)
-            self.T = T
-            self.roi = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
         if self.scale_factor != 1:
             self.down = AntiAliasInterpolation2d(num_channels, self.scale_factor)
 
@@ -154,22 +149,7 @@ class MeshDenseMotionNetwork(nn.Module):
         denormalized = tmp.squeeze(5)  # B x K x H x W x 3
         return denormalized
 
-    def search_from_pool(self, audio_prior, pool):
-        # audio_prior: B x prior_dim
-        # print('audio prior shape: {}'.format(audio_prior.shape))
-        key_pool, mesh_pool = pool[0], pool[1] # P x prior_dim, P x N x 3
-        weights = audio_prior.unsqueeze(1) - key_pool.unsqueeze(0)  # B x P x prior_dim
-        weights = weights ** 2  # B x P x prior_dim
-        weights = weights.sum(dim=2)    # B x P
-        # best choice
-        # best_index = weights.argmin(dim=1) # B
-        # result = mesh_pool[best_index] # B x N x 3
-        # weighted sum
-        weights = nn.Softmax(dim=1)(-weights / self.T) # B x P
-        result = torch.einsum('bp,pni->bni', weights, mesh_pool) # B x N x 3
-        return result
-
-    def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None, pool=None):
+    def forward(self, source_image, kp_driving, kp_source, driving_mesh_image=None):
         if self.scale_factor != 1:
             source_image = self.down(source_image)
 
@@ -177,24 +157,10 @@ class MeshDenseMotionNetwork(nn.Module):
 
         out_dict = dict()
         # print('kp value shape: {}'.format(kp_driving['value'].flatten(start_dim=-2).shape))
-        
-        if self.prior_from_audio:
-            V = pool[2] # N * 3 x pca_dim
-            prior = self.audio_prior(kp_driving['value'])   
-            searched_mesh_roi = torch.matmul(prior, V.t()).view(bs, -1, 3) # B x N x 3
-            searched_mesh = torch.tensor(kp_source['normed_mesh'])
-            searched_mesh[:, self.roi] = searched_mesh_roi
-            # searched_mesh = self.search_from_pool(prior, pool).detach()
-            # print('searched_mesh shape: {}'.format(searched_mesh.shape))
-            kp_driving['value'] = self.motion_prior(searched_mesh[:, self.roi, :2].flatten(start_dim=-2)).view(bs, -1, 2)
-            out_dict['searched_mesh'] = searched_mesh # B x N x 3
-            out_dict['pca_coef'] = prior    # B x pca_dim
-            mesh_roi_GT = kp_driving['normed_mesh'][:, self.roi].flatten(start_dim=-2) # B x N * 3
-            pca_coef_GT = torch.matmul(mesh_roi_GT, V)  # B x pca_dim
-            out_dict['pca_coef_GT'] = pca_coef_GT
-
-        else:
-            kp_driving['value'] = self.motion_prior(kp_driving['value'].flatten(start_dim=-2)).view(bs, -1, 2)
+    
+        v_driving = self.motion_prior(kp_driving['value'].flatten(start_dim=-2)).view(bs, -1, 2)
+        v_source = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1, 2)
+        kp_driving['value'] = v_source - v_driving
         # kp_source['value'] = self.motion_prior(kp_source['value'].flatten(start_dim=-2)).view(bs, -1, 2)
         
 
@@ -220,7 +186,7 @@ class MeshDenseMotionNetwork(nn.Module):
         sparse_motion = sparse_motion.permute(0, 1, 4, 2, 3)
         deformation = (sparse_motion * mask).sum(dim=1)
         deformation = deformation.permute(0, 2, 3, 1)   # B x H x W x 2
-        
+    
         out_dict['deformation'] = deformation
 
 

@@ -19,8 +19,6 @@ import os
 import ffmpeg
 import cv2
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-
 
 if sys.version_info[0] < 3:
     raise Exception("You must use Python 3 or higher. Recommended version is Python 3.7")
@@ -64,7 +62,8 @@ def get_dataset(path):
     roi_list = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
     video_name = os.path.basename(path)
     frames = sorted(os.listdir(os.path.join(path, 'img')))
-    num_frames = min(len(frames), 500)
+    num_frames = min(len(frames), len(os.listdir(os.path.join(path, 'audio'))))
+    frames = frames[:num_frames]
     frame_idx = range(num_frames)
 
     reference_frame_path = os.path.join(path, 'frame_reference.png')
@@ -227,11 +226,15 @@ if __name__ == "__main__":
 
     parser.add_argument("--use_raw", action="store_true", help="use raw dataset")
  
+    parser.add_argument('--device_id', type=str, default='1')
+
 
     parser.set_defaults(relative=False)
     parser.set_defaults(adapt_scale=False)
 
     opt = parser.parse_args()
+
+    os.environ['CUDA_VISIBLE_DEVICES'] = opt.device_id
 
     fps = 25
 

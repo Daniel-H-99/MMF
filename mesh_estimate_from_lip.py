@@ -206,6 +206,7 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, drivi
             driving_mesh_normalized_pos = kp_driving['normed_mesh'].cuda()[:, MASK_IDX]
             motion = kp_driving['driving_normed_mesh'].cuda()
             motion[:, MASK_IDX, :2] = F.grid_sample(out['deformation'].permute(0, 3, 1, 2), driving_mesh_pos).squeeze(3).permute(0, 2, 1)   # B x K x 2
+            motion[:, MASK_IDX, 2] = driving_mesh_normalized_pos[:, :, 2]
             # motion[LIP_IDX] = kp_driving['normed_lip']
             searched_mesh.append(motion)
             filename = '{:05d}.pt'.format(frame_idx + 1)

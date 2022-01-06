@@ -21,7 +21,6 @@ import pickle as pkl
 import math
 import cv2
 
-os.environ['CUDA_VISIBLE_DEVICES']='3'
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('--data_dir', type=str, default='../datasets/train_kkj/kkj04.mp4')
 parser.add_argument('--ckpt_dir', type=str, default='checkpoint')
@@ -29,20 +28,24 @@ parser.add_argument('--result_dir', type=str, default='vocoder')
 parser.add_argument('--name', type=str, default='default')
 parser.add_argument('--lr', type=float, default=1e-2)
 parser.add_argument('--split_ratio', type=float, default=0.9)
-parser.add_argument('--steps', type=int, default=1000000)
+parser.add_argument('--steps', type=int, default=20000)
 parser.add_argument('--batch_size', type=int, default=32)
-parser.add_argument('--save_freq', type=int, default=1000)
+parser.add_argument('--save_freq', type=int, default=2000)
 parser.add_argument('--log_freq', type=int, default=100)
-parser.add_argument('--milestone', type=str, default='10,20,30')
+parser.add_argument('--milestone', type=str, default='5,10,15')
 parser.add_argument('--embedding_dim', type=int, default=512)
 parser.add_argument('--log_pth', type=str, default='log.txt')
-parser.add_argument('--lipdisc_path', type=str, default='expert_ckpt/e256/best.pt')
+parser.add_argument('--lipdisc_path', type=str, default='expert_v3/00010000.pt')
 parser.add_argument('--lipdisc_weight', type=float, default=0.2)
+parser.add_argument('--device_id', type=str, default='1')
 
 
 
 
 args = parser.parse_args()
+
+os.environ['CUDA_VISIBLE_DEVICES'] = args.device_id
+
 
 # prepare dataset
 class MeshSyncDataset(Dataset):
@@ -56,7 +59,8 @@ class MeshSyncDataset(Dataset):
         return len(self.audio) - 4
     def __getitem__(self, index):
         return self.audio[index:index + 5], self.prior[index:index + 5]
-            
+
+   
 audio_pool = []
 path = os.path.join(args.data_dir, 'audio')
 frames = sorted(os.listdir(os.path.join(args.data_dir, 'img')))
@@ -108,7 +112,7 @@ total_steps = args.steps
 save_freq = args.save_freq
 log_freq = args.log_freq
 ckpt_dir = os.path.join(args.result_dir, args.ckpt_dir)
-log_path = os.path.join(args.result_dir, args.log_pth)
+log_path = os.path.join(ckpt_dir, args.log_pth)
 os.makedirs(args.result_dir, exist_ok=True)
 os.makedirs(ckpt_dir, exist_ok=True)
 

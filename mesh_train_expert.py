@@ -19,7 +19,6 @@ import random
 import pickle as pkl
 import math
 
-os.environ['CUDA_VISIBLE_DEVICES']='1'
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('--data_dir', type=str, default='../datasets/train_kkj/kkj04.mp4')
 parser.add_argument('--ckpt_dir', type=str, default='expert_ckpt')
@@ -28,14 +27,18 @@ parser.add_argument('--split_ratio', type=float, default=0.9)
 parser.add_argument('--steps', type=int, default=1000000)
 parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--save_freq', type=int, default=1000)
-parser.add_argument('--log_freq', type=int, default=100)
+parser.add_argument('--log_freq', type=int, default=200)
 parser.add_argument('--milestone', type=str, default='50,80,100')
-parser.add_argument('--embedding_dim', type=int, default='256')
+parser.add_argument('--embedding_dim', type=int, default='512')
 parser.add_argument('--log_pth', type=str, default='log.txt')
+parser.add_argument('--device_id', type=str, default='1')
 
 
 
 args = parser.parse_args()
+
+os.environ['CUDA_VISIBLE_DEVICES']=args.device_id
+
 
 # prepare dataset
 class MeshSyncDataset(Dataset):
@@ -52,7 +55,7 @@ class MeshSyncDataset(Dataset):
         negative = random.random() >= self.positive_p
         if negative:
             r = random.random()
-            if r <= 0.3:
+            if r <= 1:
                 negative_index = (index + random.choice(list(range(1, self.__len__())))) % self.__len__()
                 return self.audio[index], self.prior[negative_index:negative_index + 5], -1 # :, T x prior_dim
             elif r <= 0.6:
@@ -70,12 +73,12 @@ class MeshSyncDataset(Dataset):
             
 audio_pool = []
 path = os.path.join(args.data_dir, 'audio')
-frames = sorted(os.listdir(os.path.join(args.data_dir, 'img')))
+# frames = sorted(os.listdir(os.path.join(args.data_dir, 'img')))
 audio_frames = sorted(os.listdir(path))
-num_frames = min(len(frames), len(audio_frames))
+num_frames = len(audio_frames)
 frame_idx = range(num_frames)
 for i in range(len(frame_idx)):
-    with open(os.path.join(path, '{:05d}.pickle'.format(int(frames[frame_idx[i]][:-4]) - 1)), 'rb') as f:
+    with open(os.path.join(path, '{:05d}.pickle'.format(i)), 'rb') as f:
         mspec = pkl.load(f)
         audio_pool.append(mspec)
 
@@ -135,6 +138,7 @@ for step in range(1, total_steps + 1):
     # audio: B x :
     # prior: B x T x prior_dim
     # label: B (1, -1)
+    # prior = prior[:, :3]
     loss = model(audio.cuda(), prior.cuda(), label.cuda()) # B
     loss = loss.sum() # 1
     train_loss += loss.item()
@@ -158,6 +162,7 @@ for step in range(1, total_steps + 1):
         with torch.no_grad():
             for audio, prior, label in eval_dataloader:
                 # print('input shape: {}'.format((audio.shape, prior.shape, label.shape)))
+                # prior = prior[:, :3]
                 loss = model(audio.cuda(), prior.cuda(), label.cuda()) # B
                 positive_loss += loss[label == 1].sum()
                 negative_loss += loss[label == -1].sum()

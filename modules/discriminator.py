@@ -49,17 +49,61 @@ class Encoder(nn.Module):
         out = self.fc(nn.ReLU()(out))
         return out
     
+# class PriorEncoder(nn.Module):
+#     def __init__(self, prior_dim=20, hidden_dim=96, embedding_dim=64, num_layers=2):
+#         super(PriorEncoder, self).__init__()
+#         self.prior_dim = prior_dim
+#         self.lstm = nn.LSTM(prior_dim, hidden_dim, 2, dropout=0.2)
+#         self.fc = nn.Linear(5 * hidden_dim, embedding_dim)
+#     def forward(self, x):
+#         # x: B x T x prior_dim
+#         out = self.lstm(x)[0].flatten(start_dim=-2) # B x hidden_dim
+#         out = self.fc(nn.ReLU()(out))   # B x hidden_dim
+#         return out
+
 class PriorEncoder(nn.Module):
-    def __init__(self, prior_dim=20, hidden_dim=64, embedding_dim=64, num_layers=2):
+    def __init__(self, prior_dim=20, embedding_dim=64):
         super(PriorEncoder, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Conv1d(prior_dim, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(128, 256, kernel_size=3),
+            nn.ReLU(),
+            nn.Conv1d(256, 512, kernel_size=3)
+        )
         self.prior_dim = prior_dim
-        self.lstm = nn.LSTM(prior_dim, hidden_dim, 2, dropout=0.2)
-        self.fc = nn.Linear(5 * hidden_dim, embedding_dim)
+        self.fc = nn.Linear(512, embedding_dim)
     def forward(self, x):
         # x: B x T x prior_dim
-        out = self.lstm(x)[0].flatten(start_dim=-2) # B x hidden_dim
-        out = self.fc(nn.ReLU()(out))   # B x hidden_dim
+        x = x.transpose(1, 2)   # B x prior_dim x T
+        # print(f'x shape: {x.shape}')
+        out = self.layers(x) # B x 512 x 1
+        out = self.fc(nn.ReLU()(out.flatten(1)))   # B x hidden_dim
         return out
+
+# class PriorEncoder(nn.Module):
+#     def __init__(self, prior_dim=20, embedding_dim=64):
+#         super(PriorEncoder, self).__init__()
+#         self.layers = nn.Sequential(
+#             nn.Conv1d(prior_dim, 64, kernel_size=5, padding=2),
+#             nn.ReLU(),
+#             nn.Conv1d(64, 128, kernel_size=3, padding=1),
+#             nn.ReLU(),
+#             nn.Conv1d(128, 256, kernel_size=3),
+#             nn.ReLU(),
+#             nn.Conv1d(256, 512, kernel_size=3)
+#         )
+#         self.prior_dim = prior_dim
+#         self.fc = nn.Linear(512, embedding_dim)
+#     def forward(self, x):
+#         # x: B x T x prior_dim
+#         x = x.transpose(1, 2)   # B x prior_dim x T
+#         # print(f'x shape: {x.shape}')
+#         out = self.layers(x) # B x 512 x 1
+#         out = self.fc(nn.ReLU()(out.flatten(1)))   # B x hidden_dim
+#         return out
 
 class LipDiscriminator(nn.Module):
     def __init__(self, prior_dim=20, embedding_dim=64):

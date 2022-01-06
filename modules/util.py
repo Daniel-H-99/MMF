@@ -2,9 +2,10 @@ from torch import nn
 
 import torch.nn.functional as F
 import torch
-
+import pickle as pkl
 from sync_batchnorm import SynchronizedBatchNorm2d as BatchNorm2d
 from natsort import natsorted
+import random
 
 def get_file_list(data_dir, suffix=""):
     file_list = []
@@ -510,6 +511,7 @@ def interpolate_zs_dir(data_dir, image_rows=256, image_cols=256):
 def interpolate_zs(mesh_dir, save_dir, image_rows, image_cols):
     mesh_filename_list = get_file_list(mesh_dir)
     os.makedirs(save_dir, exist_ok=True)
+    # print(f'save dir: {save_dir}')
     for mesh_filename in tqdm(mesh_filename_list):
         mesh_dict = torch.load(mesh_filename)
         mesh = landmarkdict_to_mesh_tensor(mesh_dict)
@@ -603,3 +605,75 @@ def reorder_ring_in_order(points):
         if s == line[-1]:
             line.pop()
     return line
+
+def construct_stack(data_dir, vid_list_name='video_list.pt'):
+    mesh_stack = []
+    audio_list = []
+    vid_list = torch.load(os.path.join(data_dir, vid_list_name))
+    for vid_name in vid_list:
+            vid_path = os.path.join(data_dir, vid_name)
+            dict_dir = os.path.join(vid_path, 'mesh_dict_normalized')
+            dicts = os.listdir(dict_dir)
+            dicts.sort()
+            dicts = dicts[:-5]
+            for d in dicts:
+                    landmark_dict = torch.load(os.path.join(dict_dir, d))
+                    mesh = landmarkdict_to_mesh_tensor(landmark_dict)
+                    mesh_stack.append(mesh)
+                    with open(os.path.join(vid_path, 'audio', '{:05d}.pickle'.format(int(d[:-3]) - 1)), 'rb') as f:
+                        audio = pkl.load(f)
+                    audio_list.append(audio)
+    mesh_stack = torch.stack(mesh_stack, dim=0)
+    return mesh_stack, audio_list
+
+def project_mesh(data_dir, pca_path=None, ref_name='mesh_dict_reference.pt'):
+    mesh_path = os.path.join(data_dir, 'mesh_stack.pt')
+    reference_mesh_path = os.path.join(data_dir, ref_name)
+    mesh_stack = torch.load(mesh_path)  # L x N0 x 3
+    reference_mesh = landmarkdict_to_mesh_tensor(torch.load(reference_mesh_path))    # N0 x 3
+    mesh_stack_centered = mesh_stack - reference_mesh[None] # L x N0 x 3
+    roi = mesh_stack_centered[:, LIP_IDX] # L x N x 3
+    roi = roi.flatten(-2)   # L x N * 3
+    roi_scaled = roi / 128
+    if pca_path is None:
+        pca = torch.pca_lowrank(roi_scaled, q=20)
+        return pca
+    else:
+        _u, _s, _v = torch.load(pca_path)   # _u: _ x q, _s: q, _v: d x q
+        u = roi @ _v @ torch.diag(_s).inverse()
+        return u, _s, _v
+    
+def construct_pool(data_dir, N=None, pool_name='pool'):
+    mesh_path = os.path.join(data_dir, 'mesh_stack.pt')
+    mesh_stack = torch.load(mesh_path)
+    N0 = len(mesh_stack)
+    if N is None:
+        N = N0
+    deck = list(range(N0 - N + 1))
+    random.shuffle(deck)
+    pool_start_idx = random.choice(deck)
+    pool_idx = list(range(pool_start_idx, pool_start_idx + N))
+    mesh_pool = mesh_stack[pool_idx]
+    pool_dir = os.path.join(data_dir, pool_name)
+    os.makedirs(pool_dir, exist_ok=True)
+    os.makedirs(os.path.join(pool_dir, 'audio'), exist_ok=True)
+    torch.save(mesh_pool, os.path.join(pool_dir, 'mesh_stack.pt'))
+    torch.save(pool_idx, os.path.join(pool_dir, 'idx.pt'))
+    mesh_pca_path = os.path.join(data_dir, 'mesh_pca.pt')
+    _pca = torch.load(mesh_pca_path)
+    _coef = _pca[0]
+    coef = _coef[pool_idx]
+    pca = (coef, _pca[1], _pca[2])
+    torch.save(pca, os.path.join(pool_dir, 'mesh_pca.pt'))
+    audio_list = os.listdir(os.path.join(data_dir, 'audio'))
+    audio_list.sort()
+    for i, idx in enumerate(pool_idx):
+        audio_path = os.path.join(data_dir, 'audio', audio_list[idx])
+        with open(audio_path, 'rb') as f:
+            audio = pkl.load(f)
+        with open(os.path.join(pool_dir, 'audio', '{:05d}.pickle'.format(i)), 'wb') as f:
+            pkl.dump(audio, f)
+
+        
+
+

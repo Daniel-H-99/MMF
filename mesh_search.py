@@ -23,13 +23,9 @@ import cv2
 
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('--data_dir', type=str, default='../datasets/test_kkj/kkj04_1.mp4')
-parser.add_argument('--ckpt_dir', type=str, default='kkj04_1.mp4')
 parser.add_argument('--pool_dir', type=str, default='../datasets/train_kkj/kkj04.mp4')
-parser.add_argument('--ckpt_path', type=str, default='vocoder/lw0.8/best.pt')
-parser.add_argument('--result_dir', type=str, default='vocoder')
 parser.add_argument('--embedding_dim', type=int, default='512')
-parser.add_argument('--lipdisc_path', type=str, default='expert_ckpt/e256/best.pt')
-parser.add_argument('--lipdisc_weight', type=float, default=0.2)
+parser.add_argument('--lipdisc_path', type=str, default='expert_v3/00010000.pt')
 parser.add_argument('--window_size', type=int, default=5)
 parser.add_argument('--N', type=int, default=30)
 parser.add_argument('--T', type=float, default=1.0)
@@ -38,10 +34,10 @@ parser.add_argument('--device_id', type=str, default='1')
 
 
 
-
 args = parser.parse_args()
 
-os.environ['CUDA_VISIBLE_DEVICES'] = args.device_id
+os.environ['CUDA_VISIBLE_DEVICES']=args.device_id
+
 
 # prepare dataset
 class MeshSyncDataset(Dataset):
@@ -89,39 +85,28 @@ print('Audio Pool Size: {}, Prior Pool: {}'.format(audio_pool_size, prior_pool_s
 dataset = MeshSyncDataset(audio_pool, prior_pool)
 
 # prepare model
-lipdisc = None
-if args.lipdisc_weight > 0:
-    lipdisc = LipDiscriminator(prior_dim=20, embedding_dim=args.embedding_dim).cuda()
-    lipdisc.load_state_dict(torch.load(args.lipdisc_path))
-    for p in lipdisc.parameters():
-        p.requires_grad = False
-    lipdisc.eval()
-    torch.backends.cudnn.enabled=False
-
-model = Encoder(output_dim=20).cuda()
-assert args.ckpt_path is not None, 'pretrained checkpoint was not given'
-model.load_state_dict(torch.load(args.ckpt_path))
-model.eval()
+lipdisc = LipDiscriminator(prior_dim=20, embedding_dim=args.embedding_dim).cuda()
+lipdisc.load_state_dict(torch.load(args.lipdisc_path))
+for p in lipdisc.parameters():
+    p.requires_grad = False
+lipdisc.eval()
+torch.backends.cudnn.enabled=False
 
 # setup training
 dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 loss_fn = nn.L1Loss(reduction='sum')
 
-ckpt_dir = os.path.join(args.result_dir, args.ckpt_dir)
 normed_searched_mesh_dir = os.path.join(args.data_dir, 'mesh_dict_searched_normalized')
 normed_searched_mesh_image_dir = os.path.join(args.data_dir, 'mesh_image_searched_normalized')
 searched_mesh_dir = os.path.join(args.data_dir, 'mesh_dict_searched')
 searched_mesh_image_dir = os.path.join(args.data_dir, 'mesh_image_searched')
 z_dir = os.path.join(args.data_dir, 'z_searched')
 driving_mesh_dir = os.path.join(args.data_dir, 'mesh_dict')
-lip_dict_dir = os.path.join(args.data_dir, 'lip_dict_normalized')
-os.makedirs(args.result_dir, exist_ok=True)
-os.makedirs(ckpt_dir, exist_ok=True)
+
 os.makedirs(normed_searched_mesh_dir, exist_ok=True)
 os.makedirs(normed_searched_mesh_image_dir, exist_ok=True)
 os.makedirs(searched_mesh_dir, exist_ok=True)
 os.makedirs(searched_mesh_image_dir, exist_ok=True)
-os.makedirs(lip_dict_dir, exist_ok=True)
 reference_mesh = torch.load(os.path.join(args.data_dir, 'mesh_dict_reference.pt'))
 
 pca_pool = torch.load(os.path.join(args.pool_dir, 'mesh_pca.pt'))
@@ -149,40 +134,26 @@ audio_pool = torch.from_numpy(np.array(audio_pool).astype(np.float32))
 # mesh_pool = mesh_pool
 pool_dataset = MeshSyncDataset(audio_pool, prior_pool)
 pool_dataloader = DataLoader(pool_dataset, batch_size=1, shuffle=False)
-print('constructing search pool...')
-key_pool = []
-for audio, prior in tqdm(pool_dataloader):
-    if args.mode != 'A':
-        prior = prior.cuda()
-        key_pool.append(lipdisc.prior_encoder(prior))
-    else:
-        audio = audio.cuda()
-        key_pool.append(lipdisc.audio_encoder(audio[:, 2]))
-key_pool = torch.cat(key_pool, dim=0)
 
-def recon_lip(mesh_pca):
-    mesh_lip = torch.matmul(mesh_pca @ pool_S, pca_V.t())
-    mesh_recon = landmarkdict_to_mesh_tensor(reference_mesh).cuda()
-    bias = mesh_recon[LIP_IDX].flatten(-2)
-    return (mesh_lip * 128 + bias[None]).view(len(mesh_pca), -1, 3)
+key_pool_path = os.path.join(args.data_dir, f'key_pool_{os.path.basename(args.pool_dir)}_{args.mode}.pt')
+if os.path.exists(key_pool_path):
+    print(f'loading key pool from {key_pool_path}...')
+    key_pool = torch.load(key_pool_path)
+else:
+    print(f'constructing key pool on {key_pool_path}...')
+    key_pool = []
+    for audio, prior in tqdm(pool_dataloader):
+        if args.mode == 'L':
+            prior = prior.cuda()
+            key_pool.append(lipdisc.prior_encoder(prior))
+        else:
+            audio = audio.cuda()
+            key_pool.append(lipdisc.audio_encoder(audio[:, 2]))
 
-def save_segmap(mesh_pca, save_name):
-    # mesh_pca: B x pca_dim
-    meshes_lip = torch.matmul(mesh_pca @ pool_S, pca_V.t()) 
-    # print('meshes shape: {}'.format(meshes_lip.shape))
-    result_img = []
-    for i in range(len(meshes_lip)):
-        mesh_lip = meshes_lip[i]
-        mesh_recon = landmarkdict_to_mesh_tensor(reference_mesh).cuda()
-        bias = mesh_recon[LIP_IDX].flatten(-2)
-        # print('bias shape: {}'.format(bias.shape))
-        # print('mesh_lip shape: {}'.format(mesh_lip.shape))
-        mesh_recon[LIP_IDX] = (mesh_lip * 128 + bias).view(-1, 3)
-        mesh_dict_recon = mesh_tensor_to_landmarkdict(mesh_recon)
-        result_img.append(get_seg(mesh_dict_recon, (256, 256, 3)))
-    result_img = np.concatenate(result_img, axis=0) * 32
-    cv2.imwrite(os.path.join(ckpt_dir, save_name), result_img)
+    key_pool = torch.cat(key_pool, dim=0)
+    torch.save(key_pool, key_pool_path)
 
+print(f'Pool Sie: {len(key_pool)}')
 def search_from_pool(audio_prior, pool, N=30, T=0.5, verbose=False):
     result = {}
     # audio_prior: B x prior_dim
@@ -305,7 +276,7 @@ class Window():
 item_size = 0
 eval_lipdisc_loss = 0
 eval_loss = 0
-model.eval()
+
 window = Window(size=args.window_size, cache_size=args.N, prior_pool=prior_pool, mesh_pool=mesh_pool, encoder=lipdisc.prior_encoder)
 
 with torch.no_grad():
@@ -315,73 +286,23 @@ with torch.no_grad():
         chunked_prior_shape = prior.shape
         audio = audio.flatten(0, 1).cuda()
         prior = prior.flatten(0, 1).cuda()
-        # print('input shape: {} {}'.format(audio.shape, prior.shape))
-        pred = model(audio) # B x pca_dim
-        # print('output shape: {}'.format(pred.shape))
-        loss = 0.2 * loss_fn(pred, prior) # 1
-        eval_loss += loss.item()
-        num_items = len(audio) // 5
+
         audio = audio.view(chunked_audio_shape)[:, 2] # B x :
-        pred = pred.view(chunked_prior_shape)   # B x 5 x 
         prior = prior.view(chunked_prior_shape)
-        if lipdisc is not None:
-            label = torch.ones(len(audio)).long().cuda()
-            lipdisc_loss = lipdisc(audio, pred, label).sum()
-            eval_lipdisc_loss += lipdisc_loss.item()
-            loss += lipdisc_loss
-        else:
-            eval_lipdisc_loss += 0
-        item_size += num_items
+
         key = '{:05d}'.format(step + 1)
-        # save_segmap(pred[:, 2], key + '.png')
-        # pred_lip = recon_lip(pred[:, 2])    # B x Lip x 3
-        # GT_idx = step
-        # GT_prior = prior_pool[GT_idx][None]
-        # save_segmap(GT_prior, key + '.png')
-        # pred_lip = recon_lip(GT_prior)
-        # torch.save(pred_lip[0], os.path.join(args.data_dir, 'lip_dict_normalized', key + '.pt'))
-        # continue
 
         driving_mesh = torch.load(os.path.join(driving_mesh_dir, key + '.pt'))
         R, t, c = torch.tensor(driving_mesh['R']).float().cuda(), torch.tensor(driving_mesh['t']).float().cuda(), torch.tensor(driving_mesh['c']).float().cuda()
-        # query = pred[:, 2]
-        # query = audio
-        query = lipdisc.audio_encoder(audio)
-        # query = recon_lip(prior[:, 2]) / 128 - 1
-        # query -= query.mean(dim=1, keepdim=True)
-        # query = query.flatten(-2)
-        # print('key_pool shape: {}'.format(key_pool.shape))
-        # print('mesh_pool shape: {}'.format(mesh_pool.shape))
-        # print(f'key pool shape: {key_pool.shape}')
-        # # key pool: P x 5 x prior_dim
-        # if len(prior_chain) > 0:
-        #     condition = torch.cat(prior_chain[-2:], dim=0).cuda()   # ~2 x prior_dim
-        #     print('condition shape: {}'.format(condition.shape))
-        #     conditioned_key = torch.cat([condition.unsqueeze(0).repeat(len(key_pool), 1, 1), key_pool[:, len(condition):]], dim=1)
-        # else:
-        #     conditioned_key = key_pool
-        # prevs = len(prior_chain[-2:])
-        # conditioned_key = torch.zeros_like(pred)
-        # if prevs > 0:
-        #     condition = torch.cat(prior_chain[-2:], dim=0).cuda()   # ~2 x prior_dim
-        #     conditioned_key[:, 2 - prevs:2] = condition.unsqueeze(0).repeat(len(conditioned_key), 1, 1)
-        # conditioned_key = conditioned_key.repeat(len(key_pool), 1, 1) # P x 5 x prior_dim
-        # conditioned_key[:, 2:] = key_pool[:, 2:]
-        # conditioned_key = key_pool
-        # print('condition pool shape: {}'.format(conditioned_key.shape))
-        # search_result, search_prior = search_from_pool(query, (conditioned_key, mesh_pool), get_key=True)
 
-        search_result = search_from_pool(query, (key_pool, mesh_pool), N=args.N, T=args.T, verbose=args.mode=='O')
-        searched_mesh = search_result['mesh'][0]
-        # search_results: B x N x 3
+        query = lipdisc.audio_encoder(audio)
+
+
 
         if args.mode != 'O':
-            # print('searched prior shape: {}'.format(search_prior.shape))
-
-            # prior_chain.append(search_prior)
-
-            # search_result = mesh_pool[GT_idx][None]
-            # normed_searched_mesh = 128 * (search_result + 1)[0]  # N x 3
+            search_result = search_from_pool(query, (key_pool, mesh_pool), N=args.N, T=args.T, verbose=args.mode=='O')
+            searched_mesh = search_result['mesh'][0]
+            # search_results: B x N x 3
             normed_searched_mesh = searched_mesh
             # print('search result: {}'.format(search_result.shape))
             torch.save(mesh_tensor_to_landmarkdict(normed_searched_mesh), os.path.join(normed_searched_mesh_dir, key + '.pt'))
@@ -391,6 +312,9 @@ with torch.no_grad():
             torch.save(searched_mesh_dict, os.path.join(searched_mesh_dir, key + '.pt'))
 
         else:
+            search_result = search_from_pool(query, (key_pool, mesh_pool), N=100, T=1.0, verbose=args.mode=='O')
+            searched_mesh = search_result['mesh'][0]
+            # search_results: B x N x 3
             weights = search_result['weights'][0]
             index = search_result['index'][0]
             # print(f'weights shape: {weights.shape}, index: {index.shape}')
@@ -422,16 +346,6 @@ if args.mode == 'O':
         searched_mesh_dict = mesh_tensor_to_landmarkdict(searched_mesh)
         searched_mesh_dict.update({'R': R.cpu().numpy(), 't': t.cpu().numpy(), 'c': c.cpu().numpy()})
         torch.save(searched_mesh_dict, os.path.join(searched_mesh_dir, key + '.pt'))
-
-# eval_loss = eval_loss / item_size
-# eval_lipdisc_loss = eval_lipdisc_loss / item_size
-# print('(Test) test_loss: {}, lipdisc_loss: {}'.format(eval_loss, eval_lipdisc_loss))
-
-# train_dataloader.dataset.update_p(positive_p)
-# eval_dataloader.dataset.update_p(positive_p)
-# draw_mesh_images(os.path.join(normed_searched_mesh_dir), os.path.join(normed_searched_mesh_image_dir), 256, 256)
-# draw_mesh_images(os.path.join(searched_mesh_dir), os.path.join(searched_mesh_image_dir), 256, 256)
-# interpolate_zs(searched_mesh_dir, z_dir, 256, 256)
 
 image_rows = image_cols = 256
 draw_mesh_images(os.path.join(args.data_dir, 'mesh_dict_searched_normalized'), os.path.join(args.data_dir, 'mesh_image_searched_normalized'), image_rows, image_cols)

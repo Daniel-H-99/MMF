@@ -1,11 +1,41 @@
-tgt_dir='../datasets/etc/son.mp4'
-src_dir='../datasets/etc/kmj.mp4'
-# ffmpeg -framerate 25 -start_number 1 -i $tgt_dir/img/%05d.png -vframes 33 $tgt_dir/chunk_1.mp4
-# ffmpeg -framerate 25 -start_number 50 -i $tgt_dir/img/%05d.png -vframes 42 $tgt_dir/chunk_2.mp4
-# ffmpeg -framerate 25 -start_number 399 -i $tgt_dir/img/%05d.png -vframes 23 $tgt_dir/chunk_3.mp4
-# ffmpeg -framerate 25 -start_number 478 -i $tgt_dir/img/%05d.png -vframes 44 $tgt_dir/chunk_4.mp4
+M_LIST="
+A
+L
+O
+"
 
-python demo.py --config config/vox-256.yaml --checkpoint log/vox-cpk.pth.tar --driving_video $tgt_dir/chunk_1.mp4 --source_image $src_dir/crop/00030.png --result_video $tgt_dir/kmj_chunk_1.mp4 --relative --adapt_scale
-python demo.py --config config/vox-256.yaml --checkpoint log/vox-cpk.pth.tar --driving_video $tgt_dir/chunk_2.mp4 --source_image $src_dir/crop/00030.png --result_video $tgt_dir/kmj_chunk_2.mp4 --relative --adapt_scale
-python demo.py --config config/vox-256.yaml --checkpoint log/vox-cpk.pth.tar --driving_video $tgt_dir/chunk_3.mp4 --source_image $src_dir/crop/00030.png --result_video $tgt_dir/kmj_chunk_3.mp4 --relative --adapt_scale
-python demo.py --config config/vox-256.yaml --checkpoint log/vox-cpk.pth.tar --driving_video $tgt_dir/chunk_4.mp4 --source_image $src_dir/crop/00030.png --result_video $tgt_dir/kmj_chunk_4.mp4 --relative --adapt_scale
+P_LIST="
+XL
+L
+M
+S
+"
+
+N_LIST="
+20
+50
+100
+"
+
+T_LIST="
+0.1
+0.3
+0.5
+1.0
+"
+
+for P in $P_LIST
+do
+    for M in $M_LIST
+    do
+        for N in $N_LIST
+        do
+            for T in $T_LIST
+            do
+                python mesh_search.py --lipdisc_path expert_v3/00010000.pt --pool_dir ../datasets/kkj_v2/pool_$P --mode $M --N $N --T $T
+                python mesh_demo.py --config config/kkj-256.yaml --checkpoint log/v8.4/00000099-checkpoint.pth.tar --result_video $P_$M_$N_$T_recon.mp4
+            done
+        done
+    done
+done
+

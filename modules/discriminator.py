@@ -61,9 +61,9 @@ class Encoder(nn.Module):
 #         out = self.fc(nn.ReLU()(out))   # B x hidden_dim
 #         return out
 
-class PriorEncoder(nn.Module):
+class PriorEncoder_W5(nn.Module):
     def __init__(self, prior_dim=20, embedding_dim=64):
-        super(PriorEncoder, self).__init__()
+        super(PriorEncoder_W5, self).__init__()
         self.layers = nn.Sequential(
             nn.Conv1d(prior_dim, 64, kernel_size=5, padding=2),
             nn.ReLU(),
@@ -83,33 +83,34 @@ class PriorEncoder(nn.Module):
         out = self.fc(nn.ReLU()(out.flatten(1)))   # B x hidden_dim
         return out
 
-# class PriorEncoder(nn.Module):
-#     def __init__(self, prior_dim=20, embedding_dim=64):
-#         super(PriorEncoder, self).__init__()
-#         self.layers = nn.Sequential(
-#             nn.Conv1d(prior_dim, 64, kernel_size=5, padding=2),
-#             nn.ReLU(),
-#             nn.Conv1d(64, 128, kernel_size=3, padding=1),
-#             nn.ReLU(),
-#             nn.Conv1d(128, 256, kernel_size=3),
-#             nn.ReLU(),
-#             nn.Conv1d(256, 512, kernel_size=3)
-#         )
-#         self.prior_dim = prior_dim
-#         self.fc = nn.Linear(512, embedding_dim)
-#     def forward(self, x):
-#         # x: B x T x prior_dim
-#         x = x.transpose(1, 2)   # B x prior_dim x T
-#         # print(f'x shape: {x.shape}')
-#         out = self.layers(x) # B x 512 x 1
-#         out = self.fc(nn.ReLU()(out.flatten(1)))   # B x hidden_dim
-#         return out
+class PriorEncoder_W3(nn.Module):
+    def __init__(self, prior_dim=20, embedding_dim=64):
+        super(PriorEncoder_W3, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Conv1d(prior_dim, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(256, 512, kernel_size=3)
+        )
+        self.prior_dim = prior_dim
+        self.fc = nn.Linear(512, embedding_dim)
+
+    def forward(self, x):
+        # x: B x T x prior_dim
+        x = x.transpose(1, 2)   # B x prior_dim x T
+        # print(f'x shape: {x.shape}')
+        out = self.layers(x) # B x 512 x 1
+        out = self.fc(nn.ReLU()(out.flatten(1)))   # B x hidden_dim
+        return out
 
 class LipDiscriminator(nn.Module):
-    def __init__(self, prior_dim=20, embedding_dim=64):
+    def __init__(self, prior_dim=20, embedding_dim=64, window=5):
         super(LipDiscriminator, self).__init__()
         self.audio_encoder = Encoder(output_dim=embedding_dim)
-        self.prior_encoder = PriorEncoder(prior_dim=prior_dim, embedding_dim=embedding_dim)
+        self.prior_encoder = PriorEncoder_W5(prior_dim=prior_dim, embedding_dim=embedding_dim) if window == 5 else PriorEncoder_W3(prior_dim=prior_dim, embedding_dim=embedding_dim)
         self.loss_fn = nn.CosineEmbeddingLoss(reduction='none')
 
     def forward(self, audio, prior, label):

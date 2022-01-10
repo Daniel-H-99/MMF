@@ -22,7 +22,7 @@ import math
 import cv2
 
 parser = argparse.ArgumentParser(description='Process some integers.')
-parser.add_argument('--data_dir', type=str, default='../datasets/train_kkj/kkj04.mp4')
+parser.add_argument('--data_dir', type=str, default='../datasets/kkj_v2/train')
 parser.add_argument('--ckpt_dir', type=str, default='checkpoint')
 parser.add_argument('--result_dir', type=str, default='vocoder')
 parser.add_argument('--name', type=str, default='default')
@@ -30,12 +30,12 @@ parser.add_argument('--lr', type=float, default=1e-2)
 parser.add_argument('--split_ratio', type=float, default=0.9)
 parser.add_argument('--steps', type=int, default=20000)
 parser.add_argument('--batch_size', type=int, default=32)
-parser.add_argument('--save_freq', type=int, default=2000)
+parser.add_argument('--save_freq', type=int, default=1000)
 parser.add_argument('--log_freq', type=int, default=100)
 parser.add_argument('--milestone', type=str, default='5,10,15')
 parser.add_argument('--embedding_dim', type=int, default=512)
 parser.add_argument('--log_pth', type=str, default='log.txt')
-parser.add_argument('--lipdisc_path', type=str, default='expert_v3/00010000.pt')
+parser.add_argument('--lipdisc_path', type=str, default='expert_v3.1_W5/best.pt')
 parser.add_argument('--lipdisc_weight', type=float, default=0.2)
 parser.add_argument('--device_id', type=str, default='1')
 
@@ -55,25 +55,27 @@ class MeshSyncDataset(Dataset):
         super(MeshSyncDataset, self).__init__()
         self.audio = torch.cat([audio[:2], audio, audio[-2:]], dim=0)
         self.prior = torch.cat([torch.zeros_like(prior[0]).unsqueeze(0).repeat(2, 1), prior, torch.zeros_like(prior[0]).unsqueeze(0).repeat(2, 1)], dim=0)
+    
     def __len__(self):
         return len(self.audio) - 4
     def __getitem__(self, index):
         return self.audio[index:index + 5], self.prior[index:index + 5]
 
-   
+
+prior_pool = torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))[0]
 audio_pool = []
 path = os.path.join(args.data_dir, 'audio')
-frames = sorted(os.listdir(os.path.join(args.data_dir, 'img')))
+# frames = sorted(os.listdir(os.path.join(args.data_dir, 'img')))
 audio_frames = sorted(os.listdir(path))
-num_frames = min(len(frames), len(audio_frames))
+num_frames = min(len(prior_pool), len(audio_frames))
 frame_idx = range(num_frames)
 for i in range(len(frame_idx)):
-    with open(os.path.join(path, '{:05d}.pickle'.format(int(frames[frame_idx[i]][:-4]) - 1)), 'rb') as f:
+    with open(os.path.join(path, '{:05d}.pickle'.format(i)), 'rb') as f:
         mspec = pkl.load(f)
         audio_pool.append(mspec)
 
 audio_pool = torch.from_numpy(np.array(audio_pool).astype(np.float32))
-prior_pool = torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))[0]
+prior_pool = prior_pool[:num_frames] / 128
 
 audio_pool_size = len(audio_pool)
 prior_pool_size = len(prior_pool)
@@ -129,9 +131,10 @@ pool_S = torch.diag(torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))[1].cu
 pca_V = torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))[2].cuda() # N * 3 x pca_dim
 
 def save_segmap(mesh_pca, save_name):
+    print(f'mesh shape : {mesh_pca.shape}')
     # mesh_pca: B x pca_dim
     meshes_lip = torch.matmul(mesh_pca @ pool_S, pca_V.t()) 
-    # print('meshes shape: {}'.format(meshes_lip.shape))
+    print('meshes shape: {}'.format(meshes_lip.shape))
     result_img = []
     for i in range(len(meshes_lip)):
         mesh_lip = meshes_lip[i]
@@ -164,16 +167,15 @@ for step in range(1, total_steps + 1):
     chunked_audio_shape = audio.shape
     chunked_prior_shape = prior.shape
     audio = audio.flatten(0, 1).cuda()
-    prior = prior.flatten(0, 1).cuda()
     # print('input shape: {} {}'.format(audio.shape, prior.shape))
-    pred = model(audio) # B x pca_dim
+    pred = model(audio) # num_chunk x pca_dim
     # print('output shape: {}'.format(pred.shape))
-    loss = 0.2 * loss_fn(pred, prior) # 1
+    audio = audio.view(chunked_audio_shape)[:, 2] # B x :
+    pred = pred.view(chunked_prior_shape)   # B x 5 x :
+    loss = loss_fn(pred[:, 2], prior[:, 2].cuda()) # 1
     train_loss += loss.item()
-    num_items = len(audio) // 5
+    num_items = len(audio)
     if lipdisc is not None:
-        audio = audio.view(chunked_audio_shape)[:, 2] # B x :
-        pred = pred.view(chunked_prior_shape)   # B x 5 x :
         label = torch.ones(len(audio)).long().cuda()
         lipdisc_loss = lipdisc(audio, pred, label).sum()
         train_lipdisc_loss += lipdisc_loss.item()
@@ -192,7 +194,7 @@ for step in range(1, total_steps + 1):
         item_size = 0
 
     if step % save_freq == 0:
-        item_size = 0
+        eval_item_size = 0
         eval_lipdisc_loss = 0
         eval_loss = 0
         model.eval()
@@ -202,27 +204,27 @@ for step in range(1, total_steps + 1):
                 chunked_audio_shape = audio.shape
                 chunked_prior_shape = prior.shape
                 audio = audio.flatten(0, 1).cuda()
-                prior = prior.flatten(0, 1).cuda()
                 # print('input shape: {} {}'.format(audio.shape, prior.shape))
-                pred = model(audio) # B x pca_dim
+                pred = model(audio) # num_chunk x pca_dim
                 # print('output shape: {}'.format(pred.shape))
-                loss = 0.2 * loss_fn(pred, prior) # 1
+                audio = audio.view(chunked_audio_shape)[:, 2] # B x :
+                pred = pred.view(chunked_prior_shape)   # B x 5 x :
+                loss = loss_fn(pred[:, 2], prior[:, 2].cuda()) # 1
                 eval_loss += loss.item()
-                num_items = len(audio) // 5
+                num_items = len(audio)
                 if lipdisc is not None:
-                    audio = audio.view(chunked_audio_shape)[:, 2] # B x :
-                    pred = pred.view(chunked_prior_shape)   # B x 5 x :
                     label = torch.ones(len(audio)).long().cuda()
                     lipdisc_loss = lipdisc(audio, pred, label).sum()
                     eval_lipdisc_loss += lipdisc_loss.item()
                     loss += lipdisc_loss
                 else:
                     eval_lipdisc_loss += 0
-                item_size += num_items
-        eval_loss = eval_loss / item_size
-        eval_lipdisc_loss = eval_lipdisc_loss / item_size
+                eval_item_size += num_items
+        eval_loss = eval_loss / eval_item_size
+        eval_lipdisc_loss = eval_lipdisc_loss / eval_item_size
         print('(Eval) step [{:08d}] eval_loss: {}, lipdisc_loss: {}'.format(step, eval_loss, eval_lipdisc_loss))
         write_log('(Eval) step [{:08d}] eval_loss: {}, lipdisc_loss: {}'.format(step, eval_loss, eval_lipdisc_loss))
+        # pred = pred.view(chunked_prior_shape)   # B x 5 x :
         save_segmap(pred[:, 2], '{:05d}.png'.format(step))
         torch.save(model.state_dict(), os.path.join(ckpt_dir, '{:08d}.pt'.format(step)))
         if eval_loss + eval_lipdisc_loss <= best_eval_loss:

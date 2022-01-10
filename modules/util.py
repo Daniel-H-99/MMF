@@ -539,6 +539,8 @@ def draw_mesh_images_dir(data_dir, image_rows=256, image_cols=256):
     for mesh_dir in os.listdir(data_dir):
         if not mesh_dir.startswith('mesh_dict'):
             continue
+        if mesh_dir.endswith('.pt'):
+            continue
         print(f"working on {mesh_dir}...")
         post_fix = mesh_dir[len('mesh_dict'):]
         save_dir = 'mesh_image' + post_fix

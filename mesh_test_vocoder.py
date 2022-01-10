@@ -22,18 +22,11 @@ import math
 import cv2
 
 parser = argparse.ArgumentParser(description='Process some integers.')
-parser.add_argument('--data_dir', type=str, default='../datasets/test_kkj/kkj04_1.mp4')
-parser.add_argument('--ckpt_dir', type=str, default='kkj04_1.mp4')
-parser.add_argument('--pool_dir', type=str, default='../datasets/train_kkj/kkj04.mp4')
+parser.add_argument('--data_dir', type=str, default='../datasets/kkj_v2/studio_1_6.mp4')
+parser.add_argument('--result_dir', type=str, default='studio_1_6.mp4')
 parser.add_argument('--ckpt_path', type=str, default='vocoder/lw0.8/best.pt')
 parser.add_argument('--result_dir', type=str, default='vocoder')
 parser.add_argument('--embedding_dim', type=int, default='512')
-parser.add_argument('--lipdisc_path', type=str, default='expert_ckpt/e256/best.pt')
-parser.add_argument('--lipdisc_weight', type=float, default=0.2)
-parser.add_argument('--window_size', type=int, default=5)
-parser.add_argument('--N', type=int, default=30)
-parser.add_argument('--T', type=float, default=1.0)
-parser.add_argument('--mode', type=str, default='A')
 parser.add_argument('--device_id', type=str, default='1')
 
 
@@ -70,7 +63,6 @@ for i in range(len(frame_idx)):
 
 audio_pool = torch.from_numpy(np.array(audio_pool).astype(np.float32))
 prior_pool = torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))[0]
-prior_pool = prior_pool
 
 audio_pool_size = len(audio_pool)
 prior_pool_size = len(prior_pool)
@@ -89,15 +81,6 @@ print('Audio Pool Size: {}, Prior Pool: {}'.format(audio_pool_size, prior_pool_s
 dataset = MeshSyncDataset(audio_pool, prior_pool)
 
 # prepare model
-lipdisc = None
-if args.lipdisc_weight > 0:
-    lipdisc = LipDiscriminator(prior_dim=20, embedding_dim=args.embedding_dim).cuda()
-    lipdisc.load_state_dict(torch.load(args.lipdisc_path))
-    for p in lipdisc.parameters():
-        p.requires_grad = False
-    lipdisc.eval()
-    torch.backends.cudnn.enabled=False
-
 model = Encoder(output_dim=20).cuda()
 assert args.ckpt_path is not None, 'pretrained checkpoint was not given'
 model.load_state_dict(torch.load(args.ckpt_path))
@@ -128,37 +111,7 @@ pca_pool = torch.load(os.path.join(args.pool_dir, 'mesh_pca.pt'))
 prior_pool = pca_pool[0].cuda()
 pool_S = torch.diag(pca_pool[1].cuda())
 pca_V = pca_pool[2].cuda() # N * 3 x pca_dim
-mesh_pool = torch.load(os.path.join(args.pool_dir, 'mesh_stack.pt')).cuda()  # B x N x 3
-audio_pool = []
-path = os.path.join(args.pool_dir, 'audio')
-# frames = sorted(os.listdir(os.path.join(args.pool_dir, 'img')))
-audio_frames = sorted(os.listdir(path))
-num_frames = len(audio_frames)
-frame_idx = range(num_frames)
-for i in range(len(frame_idx)):
-    with open(os.path.join(path, '{:05d}.pickle'.format(i)), 'rb') as f:
-        mspec = pkl.load(f)
-        audio_pool.append(mspec)
 
-audio_pool = torch.from_numpy(np.array(audio_pool).astype(np.float32))
-# key_pool = prior_pool
-# key_pool = mesh_pool[:, LIP_IDX]
-# # key_pool -= key_pool.mean(dim=1, keepdim=True)
-# key_pool = key_pool.flatten(-2)
-# prior_pool = prior_pool
-# mesh_pool = mesh_pool
-pool_dataset = MeshSyncDataset(audio_pool, prior_pool)
-pool_dataloader = DataLoader(pool_dataset, batch_size=1, shuffle=False)
-print('constructing search pool...')
-key_pool = []
-for audio, prior in tqdm(pool_dataloader):
-    if args.mode != 'A':
-        prior = prior.cuda()
-        key_pool.append(lipdisc.prior_encoder(prior))
-    else:
-        audio = audio.cuda()
-        key_pool.append(lipdisc.audio_encoder(audio[:, 2]))
-key_pool = torch.cat(key_pool, dim=0)
 
 def recon_lip(mesh_pca):
     mesh_lip = torch.matmul(mesh_pca @ pool_S, pca_V.t())
@@ -175,8 +128,8 @@ def save_segmap(mesh_pca, save_name):
         mesh_lip = meshes_lip[i]
         mesh_recon = landmarkdict_to_mesh_tensor(reference_mesh).cuda()
         bias = mesh_recon[LIP_IDX].flatten(-2)
-        # print('bias shape: {}'.format(bias.shape))
-        # print('mesh_lip shape: {}'.format(mesh_lip.shape))
+        print('bias shape: {}'.format(bias.shape))
+        print('mesh_lip shape: {}'.format(mesh_lip.shape))
         mesh_recon[LIP_IDX] = (mesh_lip * 128 + bias).view(-1, 3)
         mesh_dict_recon = mesh_tensor_to_landmarkdict(mesh_recon)
         result_img.append(get_seg(mesh_dict_recon, (256, 256, 3)))

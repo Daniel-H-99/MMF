@@ -20,14 +20,15 @@ import pickle as pkl
 import math
 
 parser = argparse.ArgumentParser(description='Process some integers.')
-parser.add_argument('--data_dir', type=str, default='../datasets/train_kkj/kkj04.mp4')
+parser.add_argument('--data_dir', type=str, default='../datasets/kkj_v2/train')
 parser.add_argument('--ckpt_dir', type=str, default='expert_ckpt')
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--split_ratio', type=float, default=0.9)
-parser.add_argument('--steps', type=int, default=1000000)
+parser.add_argument('--steps', type=int, default=20000)
 parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--save_freq', type=int, default=1000)
 parser.add_argument('--log_freq', type=int, default=200)
+parser.add_argument('--window', type=int, default=5)
 parser.add_argument('--milestone', type=str, default='50,80,100')
 parser.add_argument('--embedding_dim', type=int, default='512')
 parser.add_argument('--log_pth', type=str, default='log.txt')
@@ -42,12 +43,14 @@ os.environ['CUDA_VISIBLE_DEVICES']=args.device_id
 
 # prepare dataset
 class MeshSyncDataset(Dataset):
-    def __init__(self, audio, prior):
+    def __init__(self, audio, prior,  window=5):
         # audio: L x : (tensor)
         # prior: L x prior_dim (tensor)
         super(MeshSyncDataset, self).__init__()
         self.audio = audio
-        self.prior = torch.cat([torch.zeros_like(prior[0]).unsqueeze(0).repeat(2, 1), prior, torch.zeros_like(prior[0]).unsqueeze(0).repeat(2, 1)], dim=0)
+        self.window = window
+        padding = (self.window - 1) // 2
+        self.prior = torch.cat([torch.zeros_like(prior[0]).unsqueeze(0).repeat(padding, 1), prior, torch.zeros_like(prior[0]).unsqueeze(0).repeat(padding, 1)], dim=0)
         self.positive_p = 0.5
     def __len__(self):
         return len(self.audio)
@@ -57,7 +60,7 @@ class MeshSyncDataset(Dataset):
             r = random.random()
             if r <= 1:
                 negative_index = (index + random.choice(list(range(1, self.__len__())))) % self.__len__()
-                return self.audio[index], self.prior[negative_index:negative_index + 5], -1 # :, T x prior_dim
+                return self.audio[index], self.prior[negative_index:negative_index + self.window], -1 # :, T x prior_dim
             elif r <= 0.6:
                 negative_index = (index + random.choice(list(range(1, self.__len__())))) % self.__len__()
                 return self.audio[index], torch.cat([self.prior[negative_index:negative_index+2], self.prior[index+2:index+5]], dim=0), -1
@@ -65,7 +68,7 @@ class MeshSyncDataset(Dataset):
                 negative_index = (index + random.choice(list(range(1, self.__len__())))) % self.__len__()
                 return self.audio[index], torch.cat([self.prior[index:index+2], self.prior[negative_index+2:negative_index+5]], dim=0), -1
         else:
-            return self.audio[index], self.prior[index:index + 5], 1
+            return self.audio[index], self.prior[index:index + self.window], 1
     def update_p(self, p):
         self.positive_p = p
     def reset_p(self):
@@ -83,7 +86,7 @@ for i in range(len(frame_idx)):
         audio_pool.append(mspec)
 
 audio_pool = torch.from_numpy(np.array(audio_pool).astype(np.float32))
-prior_pool = torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))[0]
+prior_pool = torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))[0] / 128
 
 audio_pool_size = len(audio_pool)
 prior_pool_size = len(prior_pool)
@@ -94,12 +97,12 @@ training_size = int(args.split_ratio * audio_pool_size)
 train_audio_pool, eval_audio_pool = audio_pool[:training_size], audio_pool[training_size:]
 train_prior_pool, eval_prior_pool = prior_pool[:training_size], prior_pool[training_size:]
 
-train_dataset = MeshSyncDataset(train_audio_pool, train_prior_pool)
-eval_dataset = MeshSyncDataset(eval_audio_pool, eval_prior_pool)
+train_dataset = MeshSyncDataset(train_audio_pool, train_prior_pool, window=args.window)
+eval_dataset = MeshSyncDataset(eval_audio_pool, eval_prior_pool, window=args.window)
 
 
 # prepare model
-model = LipDiscriminator(prior_dim=20, embedding_dim=args.embedding_dim).cuda()
+model = LipDiscriminator(prior_dim=20, embedding_dim=args.embedding_dim, window=args.window).cuda()
 
 # setup training
 train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)

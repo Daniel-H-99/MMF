@@ -62,13 +62,14 @@ def get_dataset(path):
     roi_list = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
     video_name = os.path.basename(path)
     frames = sorted(os.listdir(os.path.join(path, 'img')))
-    num_frames = min(len(frames), len(os.listdir(os.path.join(path, 'audio'))))
+    num_frames = min(len(frames), len(os.listdir(os.path.join(path, 'audio')))) - 5
+    print(f'number of frames: {num_frames}')
     frames = frames[:num_frames]
     frame_idx = range(num_frames)
 
     reference_frame_path = os.path.join(path, 'frame_reference.png')
     reference_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
-    reference_normed_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
+    reference_normed_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference_normalized.pt'))
     reference_frame = img_as_float32(io.imread(reference_frame_path))
     reference_mesh = np.array(list(reference_mesh_dict.values())[:478])
     reference_normed_mesh = np.array(list(reference_normed_mesh_dict.values())[:478])
@@ -207,7 +208,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", required=True, help="path to config")
     parser.add_argument("--checkpoint", default='vox-cpk.pth.tar', help="path to checkpoint to restore")
 
-    parser.add_argument("--vid_dir", default='../datasets/test_kkj/kkj04_1.mp4', help="video directory")
+    parser.add_argument("--data_dir", default='../datasets/kkj_v2/test/studio_1_6.mp4', help="video directory")
 
     parser.add_argument("--source_image", default='sup-mat/source.png', help="path to source image")
     parser.add_argument("--driving_video", default='sup-mat/source.png', help="path to driving video")
@@ -233,6 +234,7 @@ if __name__ == "__main__":
     parser.set_defaults(adapt_scale=False)
 
     opt = parser.parse_args()
+    opt.vid_dir = opt.data_dir
 
     os.environ['CUDA_VISIBLE_DEVICES'] = opt.device_id
 

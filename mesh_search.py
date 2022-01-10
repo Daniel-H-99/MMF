@@ -153,7 +153,8 @@ else:
     key_pool = torch.cat(key_pool, dim=0)
     torch.save(key_pool, key_pool_path)
 
-print(f'Pool Sie: {len(key_pool)}')
+print(f'Pool Size: {len(key_pool)}')
+
 def search_from_pool(audio_prior, pool, N=30, T=0.5, verbose=False):
     result = {}
     # audio_prior: B x prior_dim
@@ -260,6 +261,7 @@ class Window():
         # display: prior_dim
         self.display[pos] = display
     def get_search_pool(self, pos=2):
+        cache_size = self.size * self.cache_size
         keys = self.display[None].repeat(self.cache_size, 1, 1) # cache_size x size x prior_dim
         keys[:, pos] = self.prior_pool[self.index[pos]]
         keys = self.encoder(keys) # cache_size x embedding_dim
@@ -277,7 +279,7 @@ item_size = 0
 eval_lipdisc_loss = 0
 eval_loss = 0
 
-window = Window(size=args.window_size, cache_size=args.N, prior_pool=prior_pool, mesh_pool=mesh_pool, encoder=lipdisc.prior_encoder)
+window = Window(size=args.window_size, cache_size=100, prior_pool=prior_pool, mesh_pool=mesh_pool, encoder=lipdisc.prior_encoder)
 
 with torch.no_grad():
     for step, (audio, prior) in tqdm(enumerate(dataloader)):
@@ -321,6 +323,7 @@ with torch.no_grad():
             prior = torch.einsum('p,pd->d', weights, prior_pool[index])
             # print(f'prior shape: {prior.shape}')
             window.add(prior, weights, index)
+
             if step >=4:
                 conditioned_search_pool = window.get_search_pool()
                 search_result = search_from_pool(query, conditioned_search_pool, N=args.N, T=args.T, verbose=True)
@@ -334,6 +337,7 @@ with torch.no_grad():
                 window.update_display(prior)
 
 if args.mode == 'O':
+    window.flush()
     history = window.get_history()
     for step, searched_mesh in enumerate(history):
         key = '{:05d}'.format(step + 1)

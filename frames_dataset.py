@@ -88,6 +88,8 @@ class MeshFramesDataset(Dataset):
             self.transform = AllAugmentationWithMeshTransform(**augmentation_params)
         else:
             self.transform = None
+        
+        self.length = {}
         print('Dataset size: {}'.format(self.__len__()))
 
 
@@ -97,18 +99,19 @@ class MeshFramesDataset(Dataset):
             path = os.path.join(self.root_dir, vid)
             num_frames = min(len(os.listdir(os.path.join(path, 'img'))), len(os.listdir(os.path.join(path, 'audio'))))
             length += num_frames
+            self.length[vid] = num_frames
         return length
 
     def __getitem__(self, idx):
-
-        name = self.videos[0]
+        name = random.choice(self.videos)
+        idx %= self.length[name]
         path = os.path.join(self.root_dir, name)
 
         video_name = os.path.basename(path)
     
         frames = sorted(os.listdir(os.path.join(path, 'img')))
         num_frames = len(frames)
-        frame_idx = [(idx + int(datetime.now().timestamp())) % self.__len__(), idx] if self.is_train else range(min(500, num_frames))
+        frame_idx = [(idx + int(datetime.now().timestamp())) % self.length[name], idx] if self.is_train else range(min(500, num_frames))
 
         if self.is_train:
             mesh_dicts = [torch.load(os.path.join(path, 'mesh_dict', frames[frame_idx[i]].replace('.png', '.pt'))) for i in range(len(frame_idx))]

@@ -24,13 +24,13 @@ if __name__ == "__main__":
     if sys.version_info[0] < 3:
         raise Exception("You must use Python 3 or higher. Recommended version is Python 3.7")
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1,2,3'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '2,3'
     parser = ArgumentParser()
     parser.add_argument("--config", required=True, help="path to config")
     parser.add_argument("--mode", default="train", choices=["train", "reconstruction", "animate"])
     parser.add_argument("--log_dir", default='log', help="path to log into")
     parser.add_argument("--checkpoint", default=None, help="path to checkpoint to restore")
-    parser.add_argument("--device_ids", default="0,1,2", type=lambda x: list(map(int, x.split(','))),
+    parser.add_argument("--device_ids", default="0,1", type=lambda x: list(map(int, x.split(','))),
                         help="Names of the devices comma separated.")
     parser.add_argument("--verbose", dest="verbose", action="store_true", help="Print model architecture")
     parser.set_defaults(verbose=False)
@@ -38,8 +38,8 @@ if __name__ == "__main__":
     with open(opt.config) as f:
         config = yaml.load(f)
     if opt.mode == 'animate':
-        config['dataset_params']['root_dir'] = '../datasets/test_kkj'
-        os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+        config['dataset_params']['root_dir'] = '../datasets/kkj_v2/test'
+        os.environ['CUDA_VISIBLE_DEVICES'] = '1'
     if opt.checkpoint is not None:
         log_dir = os.path.join(*os.path.split(opt.checkpoint)[:-1])
     else:

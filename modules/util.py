@@ -608,25 +608,51 @@ def reorder_ring_in_order(points):
             line.pop()
     return line
 
-def construct_stack(data_dir, vid_list_name='video_list.pt'):
+def construct_stack(data_dir, include_audio=True):
     mesh_stack = []
-    audio_list = []
+    vid_path = data_dir
+    dict_dir = os.path.join(vid_path, 'mesh_dict_normalized')
+    dicts = os.listdir(dict_dir)
+    dicts.sort()
+    dicts = dicts[:-5]
+    for d in dicts:
+        landmark_dict = torch.load(os.path.join(dict_dir, d))
+        mesh = landmarkdict_to_mesh_tensor(landmark_dict)
+        mesh_stack.append(mesh)
+        if include_audio:
+            with open(os.path.join(vid_path, 'audio', '{:05d}.pickle'.format(int(d[:-3]) - 1)), 'rb') as f:
+                audio = pkl.load(f)
+            audio_list.append(audio)
+    mesh_stack = torch.stack(mesh_stack, dim=0)
+    return (mesh_stack, audio_list) if include_audio else mesh_stack
+
+def construct_stack_dir(data_dir, vid_list_name='video_list.pt', include_audio=True):
+    mesh_stack = []
+    if include_audio:
+        audio_list = []
     vid_list = torch.load(os.path.join(data_dir, vid_list_name))
     for vid_name in vid_list:
+            local_mesh_stack = []
+            if include_audio:
+                local_audio_stack = []
             vid_path = os.path.join(data_dir, vid_name)
             dict_dir = os.path.join(vid_path, 'mesh_dict_normalized')
             dicts = os.listdir(dict_dir)
             dicts.sort()
             dicts = dicts[:-5]
             for d in dicts:
-                    landmark_dict = torch.load(os.path.join(dict_dir, d))
-                    mesh = landmarkdict_to_mesh_tensor(landmark_dict)
-                    mesh_stack.append(mesh)
+                landmark_dict = torch.load(os.path.join(dict_dir, d))
+                mesh = landmarkdict_to_mesh_tensor(landmark_dict)
+                local_mesh_stack.append(mesh)
+                if include_audio:
                     with open(os.path.join(vid_path, 'audio', '{:05d}.pickle'.format(int(d[:-3]) - 1)), 'rb') as f:
                         audio = pkl.load(f)
-                    audio_list.append(audio)
+                    local_audio_list.append(audio)
+                    audio_list += local_audio_list
+            torch.save(torch.stack(local_mesh_stack, dim=0), os.path.join(vid_path, 'mesh_stack.pt'))
+            mesh_stack += local_mesh_stack
     mesh_stack = torch.stack(mesh_stack, dim=0)
-    return mesh_stack, audio_list
+    return (mesh_stack, audio_list) if include_audio else mesh_stack
 
 def project_mesh(data_dir, pca_path=None, ref_name='mesh_dict_reference.pt'):
     mesh_path = os.path.join(data_dir, 'mesh_stack.pt')

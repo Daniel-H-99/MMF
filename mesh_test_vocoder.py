@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from logger import Logger
-from modules.discriminator import LipDiscriminator
+from modules.discriminator import LipDiscriminator, NoiseDiscriminator
 from modules.discriminator import Encoder
 from modules.util import landmarkdict_to_mesh_tensor, mesh_tensor_to_landmarkdict, LIP_IDX, get_seg, draw_mesh_images, interpolate_zs
 from torch.optim.lr_scheduler import MultiStepLR
@@ -15,6 +15,7 @@ from sync_batchnorm import DataParallelWithCallback
 from torch.utils.data import Dataset
 import argparse
 import os
+import shutil
 import numpy as np
 import random
 import pickle as pkl
@@ -22,10 +23,9 @@ import math
 import cv2
 
 parser = argparse.ArgumentParser(description='Process some integers.')
-parser.add_argument('--data_dir', type=str, default='../datasets/kkj_v2/studio_1_6.mp4')
+parser.add_argument('--data_dir', type=str, default='../datasets/kkj_v2/test/studio_1_34.mp4')
 parser.add_argument('--result_dir', type=str, default='studio_1_6.mp4')
 parser.add_argument('--ckpt_path', type=str, default='vocoder/lw0.8/best.pt')
-parser.add_argument('--result_dir', type=str, default='vocoder')
 parser.add_argument('--embedding_dim', type=int, default='512')
 parser.add_argument('--device_id', type=str, default='1')
 
@@ -62,7 +62,7 @@ for i in range(len(frame_idx)):
         audio_pool.append(mspec)
 
 audio_pool = torch.from_numpy(np.array(audio_pool).astype(np.float32))
-prior_pool = torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))[0]
+prior_pool = torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))[0] / 128
 
 audio_pool_size = len(audio_pool)
 prior_pool_size = len(prior_pool)
@@ -85,12 +85,13 @@ model = Encoder(output_dim=20).cuda()
 assert args.ckpt_path is not None, 'pretrained checkpoint was not given'
 model.load_state_dict(torch.load(args.ckpt_path))
 model.eval()
+lipdisc = None
 
 # setup training
 dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 loss_fn = nn.L1Loss(reduction='sum')
 
-ckpt_dir = os.path.join(args.result_dir, args.ckpt_dir)
+ckpt_dir = os.path.join(args.result_dir)
 normed_searched_mesh_dir = os.path.join(args.data_dir, 'mesh_dict_searched_normalized')
 normed_searched_mesh_image_dir = os.path.join(args.data_dir, 'mesh_image_searched_normalized')
 searched_mesh_dir = os.path.join(args.data_dir, 'mesh_dict_searched')
@@ -98,16 +99,24 @@ searched_mesh_image_dir = os.path.join(args.data_dir, 'mesh_image_searched')
 z_dir = os.path.join(args.data_dir, 'z_searched')
 driving_mesh_dir = os.path.join(args.data_dir, 'mesh_dict')
 lip_dict_dir = os.path.join(args.data_dir, 'lip_dict_normalized')
-os.makedirs(args.result_dir, exist_ok=True)
-os.makedirs(ckpt_dir, exist_ok=True)
-os.makedirs(normed_searched_mesh_dir, exist_ok=True)
-os.makedirs(normed_searched_mesh_image_dir, exist_ok=True)
-os.makedirs(searched_mesh_dir, exist_ok=True)
-os.makedirs(searched_mesh_image_dir, exist_ok=True)
-os.makedirs(lip_dict_dir, exist_ok=True)
-reference_mesh = torch.load(os.path.join(args.data_dir, 'mesh_dict_reference.pt'))
+print(f'lipdict: {lip_dict_dir}')
 
-pca_pool = torch.load(os.path.join(args.pool_dir, 'mesh_pca.pt'))
+def init_dir(path):
+    if os.path.exists(path):
+        shutil.rmtree(path)
+    os.mkdir(path)
+
+init_dir(args.result_dir)
+init_dir(ckpt_dir)
+# init_dir(normed_searched_mesh_dir)
+# init_dir(normed_searched_mesh_image_dir)
+# init_dir(searched_mesh_dir)
+# init_dir(searched_mesh_image_dir)
+init_dir(lip_dict_dir)
+
+reference_mesh = torch.load(os.path.join('../datasets/train_kkj/kkj04.mp4', 'mesh_dict_reference.pt'))
+
+pca_pool = torch.load(os.path.join(args.data_dir, 'mesh_pca.pt'))
 prior_pool = pca_pool[0].cuda()
 pool_S = torch.diag(pca_pool[1].cuda())
 pca_V = pca_pool[2].cuda() # N * 3 x pca_dim
@@ -128,8 +137,8 @@ def save_segmap(mesh_pca, save_name):
         mesh_lip = meshes_lip[i]
         mesh_recon = landmarkdict_to_mesh_tensor(reference_mesh).cuda()
         bias = mesh_recon[LIP_IDX].flatten(-2)
-        print('bias shape: {}'.format(bias.shape))
-        print('mesh_lip shape: {}'.format(mesh_lip.shape))
+        # print('bias shape: {}'.format(bias.shape))
+        # print('mesh_lip shape: {}'.format(mesh_lip.shape))
         mesh_recon[LIP_IDX] = (mesh_lip * 128 + bias).view(-1, 3)
         mesh_dict_recon = mesh_tensor_to_landmarkdict(mesh_recon)
         result_img.append(get_seg(mesh_dict_recon, (256, 256, 3)))
@@ -259,7 +268,6 @@ item_size = 0
 eval_lipdisc_loss = 0
 eval_loss = 0
 model.eval()
-window = Window(size=args.window_size, cache_size=args.N, prior_pool=prior_pool, mesh_pool=mesh_pool, encoder=lipdisc.prior_encoder)
 
 with torch.no_grad():
     for step, (audio, prior) in tqdm(enumerate(dataloader)):
@@ -286,14 +294,14 @@ with torch.no_grad():
             eval_lipdisc_loss += 0
         item_size += num_items
         key = '{:05d}'.format(step + 1)
-        # save_segmap(pred[:, 2], key + '.png')
-        # pred_lip = recon_lip(pred[:, 2])    # B x Lip x 3
+        save_segmap(pred[:, 2], key + '.png')
+        pred_lip = recon_lip(pred[:, 2])    # B x Lip x 3
         # GT_idx = step
         # GT_prior = prior_pool[GT_idx][None]
         # save_segmap(GT_prior, key + '.png')
         # pred_lip = recon_lip(GT_prior)
-        # torch.save(pred_lip[0], os.path.join(args.data_dir, 'lip_dict_normalized', key + '.pt'))
-        # continue
+        torch.save(pred_lip[0], os.path.join(args.data_dir, 'lip_dict_normalized', key + '.pt'))
+        continue
 
         driving_mesh = torch.load(os.path.join(driving_mesh_dir, key + '.pt'))
         R, t, c = torch.tensor(driving_mesh['R']).float().cuda(), torch.tensor(driving_mesh['t']).float().cuda(), torch.tensor(driving_mesh['c']).float().cuda()
@@ -362,20 +370,6 @@ with torch.no_grad():
                 # print(f'prior shape: {prior.shape}')
                 window.update_display(prior)
 
-if args.mode == 'O':
-    history = window.get_history()
-    for step, searched_mesh in enumerate(history):
-        key = '{:05d}'.format(step + 1)
-        driving_mesh = torch.load(os.path.join(driving_mesh_dir, key + '.pt'))
-        R, t, c = torch.tensor(driving_mesh['R']).float().cuda(), torch.tensor(driving_mesh['t']).float().cuda(), torch.tensor(driving_mesh['c']).float().cuda()
-        normed_searched_mesh = searched_mesh
-        # print('search result: {}'.format(search_result.shape))
-        torch.save(mesh_tensor_to_landmarkdict(normed_searched_mesh), os.path.join(normed_searched_mesh_dir, key + '.pt'))
-        searched_mesh = torch.matmul(R.t(), normed_searched_mesh.t() - t).t() / c
-        searched_mesh_dict = mesh_tensor_to_landmarkdict(searched_mesh)
-        searched_mesh_dict.update({'R': R.cpu().numpy(), 't': t.cpu().numpy(), 'c': c.cpu().numpy()})
-        torch.save(searched_mesh_dict, os.path.join(searched_mesh_dir, key + '.pt'))
-
 # eval_loss = eval_loss / item_size
 # eval_lipdisc_loss = eval_lipdisc_loss / item_size
 # print('(Test) test_loss: {}, lipdisc_loss: {}'.format(eval_loss, eval_lipdisc_loss))
@@ -386,11 +380,11 @@ if args.mode == 'O':
 # draw_mesh_images(os.path.join(searched_mesh_dir), os.path.join(searched_mesh_image_dir), 256, 256)
 # interpolate_zs(searched_mesh_dir, z_dir, 256, 256)
 
-image_rows = image_cols = 256
-draw_mesh_images(os.path.join(args.data_dir, 'mesh_dict_searched_normalized'), os.path.join(args.data_dir, 'mesh_image_searched_normalized'), image_rows, image_cols)
-draw_mesh_images(os.path.join(args.data_dir, 'mesh_dict_searched'), os.path.join(args.data_dir, 'mesh_image_searched'), image_rows, image_cols)
-interpolate_zs(os.path.join(args.data_dir, 'mesh_dict_searched'), os.path.join(args.data_dir, 'z_searched'), image_rows, image_cols)
-interpolate_zs(os.path.join(args.data_dir, 'mesh_dict_searched_normalized'), os.path.join(args.data_dir, 'z_searched_normalized'), image_rows, image_cols)
+# image_rows = image_cols = 256
+# draw_mesh_images(os.path.join(args.data_dir, 'mesh_dict_searched_normalized'), os.path.join(args.data_dir, 'mesh_image_searched_normalized'), image_rows, image_cols)
+# draw_mesh_images(os.path.join(args.data_dir, 'mesh_dict_searched'), os.path.join(args.data_dir, 'mesh_image_searched'), image_rows, image_cols)
+# interpolate_zs(os.path.join(args.data_dir, 'mesh_dict_searched'), os.path.join(args.data_dir, 'z_searched'), image_rows, image_cols)
+# interpolate_zs(os.path.join(args.data_dir, 'mesh_dict_searched_normalized'), os.path.join(args.data_dir, 'z_searched_normalized'), image_rows, image_cols)
 
 
     

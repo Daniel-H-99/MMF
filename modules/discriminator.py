@@ -122,6 +122,45 @@ class LipDiscriminator(nn.Module):
         loss = self.loss_fn(audio_embedding, prior_embedding, label)
         return loss
 
+class NoiseDiscriminator(nn.Module):
+    def __init__(self, dim=20):
+        super(NoiseDiscriminator, self).__init__()
+        self.dim = dim
+        self.layers = nn.Sequential(
+            nn.Conv1d(self.dim, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(128, 256, kernel_size=3),
+            nn.ReLU(),
+            nn.Conv1d(256, 512, kernel_size=3)
+        )
+        self.fc = nn.Linear(512, 1)
+
+    def forward(self, sequence):
+        # sequence: B x window x dim
+        x = sequence.transpose(1, 2)
+        x = self.layers(x)
+        x = self.fc(nn.ReLU()(x.flatten(1))).view(-1)
+        return x
+    
+    def reality_loss(self, sequence):
+        x = sequence.transpose(1, 2)
+        x = self.layers(x)
+        x = self.fc(nn.ReLU()(x.flatten(1))).view(-1)  # B
+        loss = nn.BCEWithLogitsLoss(reduction='mean')(x, torch.ones_like(x))    # 1
+        return loss
+
+class NoiseGenerator(nn.Module):
+    def __init__(self, noise=5e-3):
+        super(NoiseGenerator, self).__init__()
+        self.noise = noise
+        self.noise = nn.Parameter(torch.Tensor([self.noise]).cuda())
+
+    def forward(self, x):
+        noise = self.noise * torch.randn_like(x).clamp(max=1)
+        return x + noise
+
 class DownBlock2d(nn.Module):
     """
     Simple block for processing video (encoder).

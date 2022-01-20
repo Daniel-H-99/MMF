@@ -10,3 +10,5 @@ vocoder/
 expert_ckpt/
 expert*
 kkj_v2/
+vocoder*
+denoiser*

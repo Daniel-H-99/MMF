@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from logger import Logger
-from modules.discriminator import LipDiscriminator
+from modules.discriminator import LipDiscriminator, NoiseDiscriminator
 from modules.discriminator import Encoder
 from modules.util import landmarkdict_to_mesh_tensor, mesh_tensor_to_landmarkdict, LIP_IDX, get_seg
 from torch.optim.lr_scheduler import MultiStepLR
@@ -28,15 +28,18 @@ parser.add_argument('--result_dir', type=str, default='vocoder')
 parser.add_argument('--name', type=str, default='default')
 parser.add_argument('--lr', type=float, default=1e-2)
 parser.add_argument('--split_ratio', type=float, default=0.9)
-parser.add_argument('--steps', type=int, default=20000)
+parser.add_argument('--steps', type=int, default=8000)
 parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--save_freq', type=int, default=1000)
 parser.add_argument('--log_freq', type=int, default=100)
-parser.add_argument('--milestone', type=str, default='5,10,15')
+parser.add_argument('--milestone', type=str, default='4,6')
 parser.add_argument('--embedding_dim', type=int, default=512)
 parser.add_argument('--log_pth', type=str, default='log.txt')
 parser.add_argument('--lipdisc_path', type=str, default='expert_v3.1_W5/best.pt')
-parser.add_argument('--lipdisc_weight', type=float, default=0.2)
+parser.add_argument('--weight', type=float, default=1.0)
+parser.add_argument('--lipdisc_weight', type=float, default=1.0)
+parser.add_argument('--denoiser_path', type=str, default='denoiser_ckpt/00002000.pt')
+parser.add_argument('--denoise_weight', type=float, default=1.0)
 parser.add_argument('--device_id', type=str, default='1')
 
 
@@ -100,6 +103,10 @@ if args.lipdisc_weight > 0:
     lipdisc.eval()
     torch.backends.cudnn.enabled=False
 
+denoiser = NoiseDiscriminator().cuda()
+denoiser.load_state_dict(torch.load(args.denoiser_path))
+denoiser.eval()
+
 model = Encoder(output_dim=20).cuda()
 
 # setup training
@@ -111,6 +118,7 @@ scheduler = MultiStepLR(optimizer, [int(m) for m in args.milestone.split(',')], 
 loss_fn = nn.L1Loss(reduction='sum')
 
 total_steps = args.steps
+step_denoiser_intro = int(0.5 * total_steps)
 save_freq = args.save_freq
 log_freq = args.log_freq
 ckpt_dir = os.path.join(args.result_dir, args.ckpt_dir)
@@ -153,10 +161,12 @@ train_iter = iter(train_dataloader)
 item_size = 0
 train_loss = 0
 train_lipdisc_loss = 0
+train_denoise_loss = 0
 best_eval_loss = 100000
 for step in range(1, total_steps + 1):
     model.train()
     optimizer.zero_grad()
+    denoise_weight = 0 if step < step_denoiser_intro else args.denoise_weight * (step - step_denoiser_intro + 1) / (step - step_denoiser_intro + 1)
     try:
         audio, prior = train_iter.next()
     except StopIteration:
@@ -172,14 +182,24 @@ for step in range(1, total_steps + 1):
     # print('output shape: {}'.format(pred.shape))
     audio = audio.view(chunked_audio_shape)[:, 2] # B x :
     pred = pred.view(chunked_prior_shape)   # B x 5 x :
-    loss = loss_fn(pred[:, 2], prior[:, 2].cuda()) # 1
-    train_loss += loss.item()
+    acc_loss = loss_fn(pred[:, 2], prior[:, 2].cuda()) # 1
+    loss = args.weight * acc_loss
+    train_loss += acc_loss.item()
     num_items = len(audio)
     if lipdisc is not None:
         label = torch.ones(len(audio)).long().cuda()
         lipdisc_loss = lipdisc(audio, pred, label).sum()
         train_lipdisc_loss += lipdisc_loss.item()
         loss += args.lipdisc_weight * lipdisc_loss
+        if denoise_weight > 0:
+            # denoise_loss = denoiser.reality_loss(pred) * len(pred)
+            # train_denoise_loss += denoise_loss.item()
+            noise = pred[1:] - pred[:-1]
+            denoise_loss = torch.norm(noise, p=1) * len(pred) / (noise.size(0) * noise.size(1))
+            train_denoise_loss += denoise_loss.item()
+            loss += denoise_weight * denoise_loss
+        else:
+            train_denoise_loss += 0
     else: 
         train_lipdisc_loss += 0
     item_size += num_items
@@ -187,15 +207,17 @@ for step in range(1, total_steps + 1):
     loss.backward()
     optimizer.step()
     if step % log_freq == 0:
-        print('step [{:05d}] train_loss: {}, train_lipdisc_loss {}'.format(step, train_loss / item_size, train_lipdisc_loss / item_size))
-        write_log('step [{:05d}] train_loss: {}, train_lipdisc_loss {}'.format(step, train_loss / item_size, train_lipdisc_loss / item_size))
+        print('step [{:05d}] train_loss: {}, train_lipdisc_loss: {}, denoise_loss: {}'.format(step, train_loss / item_size, train_lipdisc_loss / item_size, train_denoise_loss / item_size))
+        write_log('step [{:05d}] train_loss: {}, train_lipdisc_loss:, denoise_loss: {}'.format(step, train_loss / item_size, train_lipdisc_loss / item_size, train_denoise_loss / item_size))
         train_loss = 0
         train_lipdisc_loss = 0
+        train_denoise_loss = 0
         item_size = 0
 
     if step % save_freq == 0:
         eval_item_size = 0
         eval_lipdisc_loss = 0
+        eval_denoise_loss = 0
         eval_loss = 0
         model.eval()
         with torch.no_grad():
@@ -209,27 +231,36 @@ for step in range(1, total_steps + 1):
                 # print('output shape: {}'.format(pred.shape))
                 audio = audio.view(chunked_audio_shape)[:, 2] # B x :
                 pred = pred.view(chunked_prior_shape)   # B x 5 x :
-                loss = loss_fn(pred[:, 2], prior[:, 2].cuda()) # 1
-                eval_loss += loss.item()
+                eval_acc_loss = loss_fn(pred[:, 2], prior[:, 2].cuda()) # 1
+                eval_loss += eval_acc_loss
                 num_items = len(audio)
                 if lipdisc is not None:
                     label = torch.ones(len(audio)).long().cuda()
                     lipdisc_loss = lipdisc(audio, pred, label).sum()
                     eval_lipdisc_loss += lipdisc_loss.item()
-                    loss += lipdisc_loss
+                    if denoise_weight > 0:
+                        # denoise_loss = denoiser.reality_loss(pred) * len(pred)
+                        # eval_denoise_loss += denoise_loss.item()
+                        noise = pred[1:] - pred[:-1]
+                        denoise_loss = torch.norm(noise, p=1) * len(pred) / (noise.size(0) * noise.size(1))
+                        eval_denoise_loss += denoise_loss.item()
+                    else:
+                        eval_denoise_loss += 0
                 else:
                     eval_lipdisc_loss += 0
                 eval_item_size += num_items
         eval_loss = eval_loss / eval_item_size
         eval_lipdisc_loss = eval_lipdisc_loss / eval_item_size
-        print('(Eval) step [{:08d}] eval_loss: {}, lipdisc_loss: {}'.format(step, eval_loss, eval_lipdisc_loss))
-        write_log('(Eval) step [{:08d}] eval_loss: {}, lipdisc_loss: {}'.format(step, eval_loss, eval_lipdisc_loss))
+        eval_denoise_loss = eval_denoise_loss / eval_item_size
+        print('(Eval) step [{:08d}] eval_loss: {}, lipdisc_loss: {}, denoise_loss: {}'.format(step, eval_loss, eval_lipdisc_loss, eval_denoise_loss))
+        write_log('(Eval) step [{:08d}] eval_loss: {}, lipdisc_loss: {}, denoise_loss: {}'.format(step, eval_loss, eval_lipdisc_loss, eval_denoise_loss))
         # pred = pred.view(chunked_prior_shape)   # B x 5 x :
         save_segmap(pred[:, 2], '{:05d}.png'.format(step))
         torch.save(model.state_dict(), os.path.join(ckpt_dir, '{:08d}.pt'.format(step)))
-        if eval_loss + eval_lipdisc_loss <= best_eval_loss:
+        eval_total_loss = args.weight * eval_loss + args.lipdisc_weight * eval_lipdisc_loss + args.denoise_weight * eval_denoise_loss
+        if eval_total_loss <= best_eval_loss:
             torch.save(model.state_dict(), os.path.join(ckpt_dir, 'best.pt'))
-            best_eval_loss = eval_loss + eval_lipdisc_loss
+            best_eval_loss = eval_total_loss
             print('best loss of step {} saved'.format(step))
             write_log('best loss of step {} saved\n'.format(step))
         scheduler.step()

@@ -19,11 +19,12 @@ from modules.util import mesh_tensor_to_landmarkdict, draw_mesh_images, interpol
 
 from scipy.spatial import ConvexHull
 import os
+import shutil
 import ffmpeg
 import cv2
 import pickle as pkl
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 
 if sys.version_info[0] < 3:
@@ -71,19 +72,27 @@ def get_dataset(path):
     roi_list = [0, 267, 13, 14, 269, 270, 17, 146, 402, 405, 409, 415, 37, 39, 40, 178, 181, 310, 311, 312, 185, 314, 317, 61, 191, 318, 321, 324, 78, 80, 81, 82, 84, 87, 88, 91, 95, 375]
     video_name = os.path.basename(path)
     frames = sorted(os.listdir(os.path.join(path, 'img')))
-    num_frames = min(len(frames), 500)
+    audios = sorted(os.listdir(os.path.join(path, 'audio')))
+    num_frames = min(len(frames), len(audios), len(os.listdir(os.path.join(path, 'lip_dict_normalized'))))
+    frames = frames[:num_frames]
     frame_idx = range(num_frames)
 
     audio_pool = []
-    frames = sorted(os.listdir(os.path.join(path, 'img')))
-    num_frames = min(len(frames), len(os.listdir(os.path.join(path, 'audio'))))
+    # num_frames = min(len(frames), len(os.listdir(os.path.join(path, 'audio'))))
+    # num_frames = 100
     frame_idx = range(num_frames)
     for i in range(len(frame_idx)):
         with open(os.path.join(path, 'audio', '{:05d}.pickle'.format(int(frames[frame_idx[i]][:-4]) - 1)), 'rb') as f:
             mspec = pkl.load(f)
             audio_pool.append(mspec)
     audio_pool = np.array(audio_pool).astype(np.float32)
+    frames = frames[:num_frames]
+    audio_pool = audio_pool[:num_frames]
+    # print(f'num frames: {len(frames)}')
+    # print(f'frames: {frames}')
 
+    _path = path
+    path = '../datasets/train_kkj/kkj04.mp4'
     reference_frame_path = os.path.join(path, 'frame_reference.png')
     reference_mesh_img_path = os.path.join(path, 'mesh_image_reference.png')
     reference_mesh_dict = torch.load(os.path.join(path, 'mesh_dict_reference.pt'))
@@ -104,6 +113,7 @@ def get_dataset(path):
     R_array = [reference_R for idx in frame_idx]
     t_array = [reference_t for idx in frame_idx]
     c_array = [reference_c for idx in frame_idx]
+    path = _path
 
     audio_array = []
 
@@ -115,7 +125,7 @@ def get_dataset(path):
     mesh_dict = 'mesh_dict'
     normed_mesh_dict = 'mesh_dict_normalized'
     lip_dict = 'lip_dict_normalized'
-    driving_lip_array = [torch.load(os.path.join(path, lip_dict, frames[idx].replace('.png', '.pt'))).cpu().numpy() for idx in frame_idx]
+    driving_lip_array = [torch.load(os.path.join(path, lip_dict, frames[idx].replace('.png', '.pt'))).cpu().detach().numpy() for idx in frame_idx]
     lip_mask_array = [get_lip_mask(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))), (256, 256, 3)) for idx in frame_idx]
     
     _mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
@@ -124,7 +134,7 @@ def get_dataset(path):
     _t_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['t']) for idx in frame_idx]
     _c_array = [np.array(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt')))['c']) for idx in frame_idx]
     
-    frames = ['frame_reference.png' for _ in range(len(frames))]
+    frames = ['00001.png' for _ in range(len(frames))]
 
     driving_mesh_array = [np.array(list(torch.load(os.path.join(path, mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
     driving_normed_mesh_array = [np.array(list(torch.load(os.path.join(path, normed_mesh_dict, frames[idx].replace('.png', '.pt'))).values())[:478]) for idx in frame_idx]
@@ -242,6 +252,7 @@ def make_animation(source_video, driving_video, source_mesh, driving_mesh, drivi
 
 def save_searched_mesh(searched_mesh_batch, save_dir):
     # searched_mesh_batch: L x N * 3
+    shutil.rmtree(save_dir)
     os.makedirs(save_dir, exist_ok=True)
     for i in tqdm(range(len(searched_mesh_batch))):
         mesh = searched_mesh_batch[i].view(-1, 3)   # N x 3
@@ -253,7 +264,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", required=True, help="path to config")
     parser.add_argument("--checkpoint", default='vox-cpk.pth.tar', help="path to checkpoint to restore")
 
-    parser.add_argument("--vid_dir", default='../datasets/test_kkj/kkj04_1.mp4', help="video directory")
+    parser.add_argument("--vid_dir", default='../datasets/kkj_v2/test/studio_1_34.mp4', help="video directory")
 
     parser.add_argument("--source_image", default='sup-mat/source.png', help="path to source image")
     parser.add_argument("--driving_video", default='sup-mat/source.png', help="path to driving video")
@@ -285,7 +296,7 @@ if __name__ == "__main__":
     generator.module.dense_motion_network.T = opt.T
     dataset = get_dataset(opt.vid_dir)
     pca_pool = torch.load(os.path.join(opt.vid_dir, 'mesh_pca.pt'))
-    pool = (pca_pool[0].cuda(), torch.load(os.path.join(opt.vid_dir, 'mesh_pool.pt')).cuda(), pca_pool[2].cuda())
+    pool = (pca_pool[0].cuda(), torch.load(os.path.join(opt.vid_dir, 'mesh_stack.pt')).cuda(), pca_pool[2].cuda())
     searched_mesh, normed_mesh = make_animation(dataset['video'], dataset['driving_video'], dataset['mesh'], dataset['driving_mesh'], dataset['driving_mesh_img'], generator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, cpu=opt.cpu)
     searched_mesh = torch.cat(searched_mesh, dim=0)
     normed_mesh = torch.cat(normed_mesh, dim=0)

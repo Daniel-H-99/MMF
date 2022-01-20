@@ -208,7 +208,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", required=True, help="path to config")
     parser.add_argument("--checkpoint", default='vox-cpk.pth.tar', help="path to checkpoint to restore")
 
-    parser.add_argument("--data_dir", default='../datasets/kkj_v2/test/studio_1_6.mp4', help="video directory")
+    parser.add_argument("--data_dir", default='../datasets/kkj_v2/test/studio_1_34.mp4', help="video directory")
 
     parser.add_argument("--source_image", default='sup-mat/source.png', help="path to source image")
     parser.add_argument("--driving_video", default='sup-mat/source.png', help="path to driving video")
